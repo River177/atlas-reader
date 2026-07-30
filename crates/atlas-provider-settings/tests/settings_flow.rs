@@ -6,9 +6,9 @@ use atlas_domain::{
     ProviderKind, TranslationSettingsInput,
 };
 use atlas_provider_settings::{
-    ConnectionProbe, DefaultProviderSettings, InMemorySecretStore, ProbeRequest, ProviderProfile,
-    ProviderSettingsModule, ProviderSettingsStore, ScriptedConnectionProbe, Secret, SecretStore,
-    secret_account,
+    ConnectionProbe, DefaultProviderSettings, EnvironmentSecretOverride, InMemorySecretStore,
+    ProbeRequest, ProviderProfile, ProviderSettingsModule, ProviderSettingsStore,
+    ScriptedConnectionProbe, Secret, SecretStore, secret_account,
 };
 
 #[derive(Debug, Default)]
@@ -100,6 +100,34 @@ impl Harness {
     fn new() -> Self {
         Self::with_results([])
     }
+
+    /// Composes the module the way the desktop application does, with a
+    /// development override shadowing reads of the durable store.
+    fn with_environment_override() -> Self {
+        let store = Arc::new(InMemoryProviderSettingsStore::default());
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let probe = Arc::new(ScriptedConnectionProbe::new([]));
+        let shadowed = Arc::new(EnvironmentSecretOverride::with_lookup(
+            Arc::clone(&secrets),
+            shell_exported_key,
+        ));
+        let module = DefaultProviderSettings::new(
+            Arc::clone(&store) as Arc<dyn ProviderSettingsStore>,
+            shadowed as Arc<dyn SecretStore>,
+            Arc::clone(&probe) as Arc<dyn ConnectionProbe>,
+        );
+        Self {
+            module,
+            store,
+            secrets,
+            probe,
+        }
+    }
+}
+
+/// Stands in for a credential the developer exported in their shell.
+fn shell_exported_key(_name: &str) -> Option<String> {
+    Some("shell-exported-key".to_owned())
 }
 
 fn mineru_input(endpoint: &str, api_key: Option<&str>, automatic: bool) -> MineruSettingsInput {
@@ -647,4 +675,58 @@ fn stored_key(harness: &Harness, kind: ProviderKind) -> Option<String> {
         .get(&secret_account(kind))
         .expect("secret lookup should succeed")
         .map(|secret| secret.expose().to_owned())
+}
+
+/// A rollback must restore what was durably stored, never a value that only
+/// shadowed it. Restoring the shadow would write the developer's shell-exported
+/// credential into the keychain, which no save was ever asked to do.
+#[tokio::test]
+async fn a_rejected_write_never_persists_an_environment_override() {
+    let harness = Harness::with_environment_override();
+    harness.store.reject_writes(true);
+
+    harness
+        .module
+        .save_translation(translation_input(
+            "https://models.example.com/v1",
+            Some("typed-key"),
+        ))
+        .await
+        .expect_err("the rejected write should surface");
+
+    assert_eq!(
+        stored_key(&harness, ProviderKind::Translation),
+        None,
+        "the shadowed value must not become a stored credential"
+    );
+}
+
+/// The same rollback must not overwrite a real stored credential with the
+/// shadowing one.
+#[tokio::test]
+async fn a_rejected_write_restores_the_stored_key_not_the_override() {
+    let harness = Harness::with_environment_override();
+    harness
+        .secrets
+        .set(
+            &secret_account(ProviderKind::Translation),
+            &Secret::new("keychain-key"),
+        )
+        .expect("seeding the keychain should succeed");
+    harness.store.reject_writes(true);
+
+    harness
+        .module
+        .save_translation(translation_input(
+            "https://models.example.com/v1",
+            Some("typed-key"),
+        ))
+        .await
+        .expect_err("the rejected write should surface");
+
+    assert_eq!(
+        stored_key(&harness, ProviderKind::Translation),
+        Some("keychain-key".to_owned()),
+        "the rollback must restore the durable credential"
+    );
 }

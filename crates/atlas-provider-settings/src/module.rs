@@ -95,7 +95,10 @@ impl DefaultProviderSettings {
         let replaced = match supplied_key {
             None => None,
             Some(key) => {
-                let previous = self.secrets.get(&profile.secret_account)?;
+                // Snapshots durable storage, not the effective credential: an
+                // override that only shadows reads must never be written back
+                // into the keychain by a rollback.
+                let previous = self.secrets.stored(&profile.secret_account)?;
                 self.secrets.set(&profile.secret_account, &key)?;
                 Some(previous)
             }

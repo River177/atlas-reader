@@ -2302,12 +2302,36 @@ MVP 采用 Referenced File 模式，不复制用户原始 PDF 到 Application Su
 
 ### 23.2 Keychain
 
-| Account | 内容 |
-|---|---|
-| `cloud-mineru:<profile-id>` | Cloud MinerU API Key |
-| `translation:<profile-id>` | OpenAI-compatible API Key |
+Keychain Service 固定为 `com.atlasreader.providers`。Account 由 Provider 种类决定，
+跨升级与重装保持稳定，与 Profile ID 无关，因此切换 Profile 不会遗留孤儿凭据：
 
-Keychain Service 固定为 `com.atlasreader.desktop`。
+| Account | 内容 | 开发期环境变量 |
+|---|---|---|
+| `atlas.cloud_mineru` | Cloud MinerU API Key | `ATLAS_CLOUD_MINERU` |
+| `atlas.openai_compatible` | OpenAI-compatible API Key | `ATLAS_OPENAI_COMPATIBLE` |
+
+#### 开发期的 Keychain 授权弹窗
+
+macOS 把 Keychain 条目的访问控制绑定到访问者的代码签名身份。开发构建是 ad-hoc 签名，
+链接器会把构建哈希写进签名标识（实测为 `Identifier=live_translation-129119472f4dbadd`，
+`Signature=adhoc, linker-signed`），因此每次 `cargo build` 产出的二进制在 Keychain 看来
+都是一个全新的应用，必然重新弹窗。选择「始终允许」也无效，因为被授权的那个二进制会被
+下一次构建替换掉。
+
+这是开发构建的产物，不是最终用户会遇到的问题：签名后的 Atlas 具有稳定的签名标识，
+用户只会在首次访问时授权一次。
+
+开发期通过环境变量覆盖读取路径来绕开 Keychain，从而完全不触发弹窗。规则：
+
+- 变量名由 Account 推导：`.` 换成 `_` 后全大写。
+- 只覆盖读取。`set` 与 `delete` 始终作用于 Keychain，因此在覆盖生效期间写入的值不会
+  改变 `get` 的返回，直到变量被取消设置。
+- 空白值视为未配置，回落到 Keychain，避免用空凭据遮蔽真实凭据。
+- 无法推导出合法变量名的 Account 完全不查环境，避免被强行映射到相邻的变量名。
+- **Release 构建完全忽略环境变量。** 签名后的 Atlas 只从 Keychain 读取凭据，任何环境
+  变量都无法注入凭据。
+
+凭据在任何情况下都不得写入仓库。仓库是公开的，一旦进入 Git 历史即为永久泄漏。
 
 ### 23.3 原子写入
 
@@ -2787,7 +2811,9 @@ OpenAI-compatible：
 
 - 项目所有者通过本机 Keychain 或 CI Secret 提供开发/测试 API Key。
 - 开发 Key 存放于 macOS Keychain，Service 为 `com.atlasreader.providers`，
-  Account 为 `atlas.mineru`，与应用运行时读取的位置一致，无需另设开发专用通道。
+  Account 为 `atlas.cloud_mineru`，与应用运行时读取的位置一致，无需另设开发专用通道。
+- 也可通过 `ATLAS_CLOUD_MINERU` 与 `ATLAS_OPENAI_COMPATIBLE` 环境变量提供，
+  见 §23.2。这是开发期避免 Keychain 授权弹窗的推荐方式，Release 构建不读这两个变量。
 - 正式产品不复用开发 Key；每位用户配置自己的 Cloud MinerU Key。
 - Key 不写入仓库、配置文件、Fixture、Prompt、日志、诊断包或测试快照。
 - 默认测试使用 `ScriptedCloudParserAdapter` 和 WireMock，不产生真实费用。

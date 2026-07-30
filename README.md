@@ -49,7 +49,8 @@ ATLAS_LIVE_MINERU=1 cargo test -p atlas-adapters --test live_mineru
 ```
 
 The test reads its credential from the same Keychain entry the application writes, so no key is
-needed in the environment or the repository. Save a Cloud MinerU key in Atlas settings first.
+needed in the repository. Save a Cloud MinerU key in Atlas settings first, or export
+`ATLAS_CLOUD_MINERU` to skip the keychain entirely — see [Credentials](#credentials).
 
 ### Translation protocol verification
 
@@ -73,7 +74,37 @@ ATLAS_LIVE_TRANSLATION=1 cargo test -p atlas-adapters --test live_translation
 
 Set `ATLAS_LIVE_TRANSLATION_URL` to choose the endpoint; it defaults to `http://127.0.0.1:4141/v1`.
 The credential comes from the Keychain entry the application writes, so save a translation key in
-Atlas settings first.
+Atlas settings first, or export `ATLAS_OPENAI_COMPATIBLE` — see [Credentials](#credentials).
+
+### Credentials
+
+Credentials live in the macOS keychain under service `com.atlasreader.providers`. **Never put an API
+key in this repository.** It is public, and anything committed to git history is leaked permanently
+even if a later commit removes it.
+
+macOS ties keychain access control to the calling binary's code signature. Development builds are
+ad-hoc signed and the linker embeds the cargo build hash in the signing identity, so every rebuild
+looks like a brand new application to the keychain and triggers an authorization prompt. Choosing
+"Always Allow" does not help, because the next build replaces the binary that was authorized.
+
+Debug builds therefore read an environment variable before touching the keychain:
+
+| Provider          | Keychain account          | Environment variable      |
+| ----------------- | ------------------------- | ------------------------- |
+| Cloud MinerU      | `atlas.cloud_mineru`      | `ATLAS_CLOUD_MINERU`      |
+| Translation model | `atlas.openai_compatible` | `ATLAS_OPENAI_COMPATIBLE` |
+
+Export them in your shell and development stops prompting:
+
+```sh
+export ATLAS_CLOUD_MINERU='...'
+export ATLAS_OPENAI_COMPATIBLE='...'
+```
+
+The override shadows reads only; saving a key in settings still writes to the keychain. Blank values
+are treated as unset and fall through to the keychain. **Release builds ignore these variables
+entirely**, so a shipped Atlas reads credentials only from the keychain — and because a signed app
+keeps a stable identity across launches and upgrades, users are prompted at most once.
 
 ## MVP direction
 

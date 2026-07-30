@@ -23,7 +23,8 @@ use std::time::Duration;
 use atlas_adapters::{HttpConnectionProbe, MacOsKeychainAdapter};
 use atlas_domain::{ConnectionTestCode, ProviderKind};
 use atlas_provider_settings::{
-    ConnectionProbe, ProbeRequest, Secret, SecretStore, normalize, secret_account,
+    ConnectionProbe, EnvironmentSecretOverride, ProbeRequest, Secret, SecretStore, normalize,
+    secret_account,
 };
 
 const DEFAULT_BASE_URL: &str = "http://127.0.0.1:4141/v1";
@@ -37,7 +38,7 @@ fn base_url() -> String {
 }
 
 fn stored_key() -> Option<Secret> {
-    MacOsKeychainAdapter::new()
+    EnvironmentSecretOverride::new(MacOsKeychainAdapter::new())
         .get(&secret_account(ProviderKind::Translation))
         .expect("the keychain should be readable")
 }

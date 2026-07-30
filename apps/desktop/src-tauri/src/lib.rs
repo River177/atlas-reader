@@ -10,7 +10,7 @@ use atlas_adapters::{
 };
 use atlas_document_reader::{DefaultDocumentReader, ReaderSourceRegistry};
 use atlas_library::DefaultLibraryModule;
-use atlas_provider_settings::DefaultProviderSettings;
+use atlas_provider_settings::{DefaultProviderSettings, EnvironmentSecretOverride};
 use atlas_reading_session::DefaultReadingSession;
 use atlas_storage::{AtlasDatabase, SqliteDocumentStore, SqliteProviderSettingsStore};
 use tauri::Manager;
@@ -41,7 +41,7 @@ pub fn run() {
                 Arc::new(DefaultDocumentReader::new(document_store, module_sources));
             let provider_settings = Arc::new(DefaultProviderSettings::new(
                 Arc::new(SqliteProviderSettingsStore::new(&database)),
-                Arc::new(MacOsKeychainAdapter::new()),
+                Arc::new(EnvironmentSecretOverride::new(MacOsKeychainAdapter::new())),
                 Arc::new(HttpConnectionProbe::new()?),
             ));
             let providers = Arc::new(UnconfiguredProviderStatusAdapter);

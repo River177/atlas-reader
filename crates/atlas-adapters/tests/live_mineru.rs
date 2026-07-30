@@ -2,8 +2,10 @@
 //!
 //! Skipped unless `ATLAS_LIVE_MINERU=1`, per the spec's live-provider boundary,
 //! so ordinary test runs stay offline and free. The credential is read from the
-//! same keychain entry the application uses, so no key ever reaches the repo,
-//! the environment, or the test output.
+//! same keychain entry the application uses, or from `ATLAS_CLOUD_MINERU` when
+//! that is exported, so no key ever reaches the repository or the test output.
+//! The environment override exists because development builds are ad-hoc signed
+//! and the keychain re-prompts for every rebuild; see the README.
 //!
 //! Run with:
 //!
@@ -19,7 +21,8 @@ use std::time::Duration;
 use atlas_adapters::{HttpConnectionProbe, MacOsKeychainAdapter};
 use atlas_domain::{ConnectionTestCode, ProviderKind};
 use atlas_provider_settings::{
-    ConnectionProbe, ProbeRequest, Secret, SecretStore, normalize, secret_account,
+    ConnectionProbe, EnvironmentSecretOverride, ProbeRequest, Secret, SecretStore, normalize,
+    secret_account,
 };
 
 const BASE_URL: &str = "https://mineru.net/api/v4";
@@ -29,7 +32,7 @@ fn enabled() -> bool {
 }
 
 fn stored_key() -> Option<Secret> {
-    MacOsKeychainAdapter::new()
+    EnvironmentSecretOverride::new(MacOsKeychainAdapter::new())
         .get(&secret_account(ProviderKind::Mineru))
         .expect("the keychain should be readable")
 }

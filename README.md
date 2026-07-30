@@ -24,7 +24,14 @@ Completed vertical slices:
    dedicated `atlas-reader://` protocol, so absolute file paths never reach the frontend and a token
    stops working as soon as the source file changes or the reader closes.
 
-The next vertical slice is automatic Cloud MinerU parsing with a user-supplied API key.
+3. **Provider settings** — configure the Cloud MinerU endpoint and any OpenAI-compatible translation
+   endpoint, store each API key in the macOS Keychain, and test a connection with a result that
+   distinguishes DNS, TLS, authorization, rate limiting, protocol mismatch, and timeout. A key is
+   never readable back through any interface, plain HTTP is accepted only for loopback endpoints,
+   and the settings screen states what a paper upload would send, where, and under whose credential
+   before automatic cloud parsing can be switched on.
+
+The next vertical slice is automatic Cloud MinerU parsing of an imported paper.
 
 ## MVP direction
 
@@ -52,6 +59,8 @@ crates/atlas-document-reader
                           Reader module: source authorization and reading position
 crates/atlas-reading-session
                           ReadingSession interface and implementation
+crates/atlas-provider-settings
+                          Provider endpoints, credentials, and connection tests
 crates/atlas-storage      SQLite migrations and storage adapters
 crates/atlas-adapters     External-provider adapters
 crates/atlas-contracts    Rust contract facade

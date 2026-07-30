@@ -1,10 +1,12 @@
 import type {
   CommandReceipt,
+  ConnectionTestResult,
   DocumentSummary,
   ImportPdfResult,
   LibraryPage,
   OpenedReaderDocument,
   OpenSessionResult,
+  PublicProviderSettings,
   ReadingPosition,
   RefreshSourcesResult,
 } from "@atlas/contracts";
@@ -96,6 +98,25 @@ export const tauriBridge: AtlasBridge = {
         sourceToken,
         finalPosition: finalPosition ?? null,
       },
+    });
+  },
+  getProviderSettings() {
+    return invoke<PublicProviderSettings>("provider_settings_get");
+  },
+  saveMineruSettings(input) {
+    return invoke<ConnectionTestResult>("provider_settings_save_mineru", { input });
+  },
+  saveTranslationSettings(input) {
+    return invoke<ConnectionTestResult>("provider_settings_save_translation", { input });
+  },
+  testProviderConnection(provider) {
+    return invoke<ConnectionTestResult>("provider_settings_test", {
+      input: { provider },
+    });
+  },
+  deleteProviderSecret(provider) {
+    return invoke<void>("provider_settings_delete_secret", {
+      input: { provider },
     });
   },
   openReadingSession(input) {

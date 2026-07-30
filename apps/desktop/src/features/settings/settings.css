@@ -1,0 +1,146 @@
+.settings-body {
+  display: grid;
+  flex: 1;
+  gap: 24px;
+  align-content: start;
+  padding: 42px 64px;
+}
+
+.settings-loading {
+  margin: 0;
+  color: #6d7268;
+  font-size: 13px;
+}
+
+.settings-card {
+  display: grid;
+  gap: 8px;
+  padding: 24px 26px;
+  background: #fbfaf6;
+  border: 1px solid #dcdad0;
+  border-radius: 8px;
+}
+
+.settings-card h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.settings-lead {
+  margin: 0 0 8px;
+  color: #6d7268;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-card label {
+  margin-top: 6px;
+  color: #4a4f47;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.settings-card input[type="text"],
+.settings-card input[type="password"] {
+  padding: 9px 11px;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  background: #ffffff;
+  border: 1px solid #d3d1c6;
+  border-radius: 5px;
+}
+
+.settings-card input[type="text"]:focus,
+.settings-card input[type="password"]:focus {
+  border-color: #7f8c62;
+  outline: none;
+}
+
+.settings-card input:disabled {
+  color: #8b8f86;
+  background: #f2f1eb;
+}
+
+.settings-switch {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  margin-top: 12px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.settings-switch input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #55613b;
+}
+
+.settings-disclosure {
+  display: grid;
+  gap: 6px;
+  margin: 14px 0 4px;
+  padding: 14px 16px;
+  background: #f1f0e8;
+  border: 1px solid #dcdad0;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.settings-disclosure > div {
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  gap: 12px;
+}
+
+.settings-disclosure dt {
+  color: #6d7268;
+}
+
+.settings-disclosure dd {
+  margin: 0;
+  color: #35392f;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 16px;
+}
+
+.settings-secret-state {
+  margin-left: auto;
+  color: #6d7268;
+  font-size: 12px;
+}
+
+.settings-result {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #d0dfa0;
+  border-radius: 5px;
+  color: #44502e;
+  background: #edf4d3;
+  font-size: 12px;
+}
+
+.settings-result--failed {
+  color: #7c332c;
+  background: #f7e4e1;
+  border-color: #e7b9b3;
+}
+
+.settings-pending {
+  color: #8a6d1f;
+  font-style: normal;
+}

@@ -6,6 +6,7 @@ members = [
   "crates/atlas-domain",
   "crates/atlas-document-reader",
   "crates/atlas-library",
+  "crates/atlas-provider-settings",
   "crates/atlas-reading-session",
   "crates/atlas-storage",
 ]
@@ -14,7 +15,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["Atlas Reader contributors"]
 
 [workspace.dependencies]

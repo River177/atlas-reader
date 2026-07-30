@@ -10,6 +10,7 @@ async-trait.workspace = true
 atlas-domain = { path = "../atlas-domain" }
 atlas-document-reader = { path = "../atlas-document-reader" }
 atlas-library = { path = "../atlas-library" }
+atlas-provider-settings = { path = "../atlas-provider-settings" }
 serde_json.workspace = true
 sqlx.workspace = true
 

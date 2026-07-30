@@ -3,6 +3,7 @@ mod ids;
 mod library;
 mod reader;
 mod session;
+mod settings;
 
 pub use error::{AtlasError, AtlasErrorCode};
 pub use ids::{BlockId, ChapterId, CommandId, DocumentId, JobId, ReaderSourceToken, SessionId};
@@ -14,4 +15,8 @@ pub use reader::{OpenedReaderDocument, ReadingPosition, ReadingPositionUpdate};
 pub use session::{
     CommandReceipt, CommandStatus, OpenSessionInput, OpenSessionResult, ParseState, ProviderState,
     ProviderStatusSnapshot, ReadingCommand, SessionLifecycle, SessionSnapshot,
+};
+pub use settings::{
+    ConnectionTestCode, ConnectionTestResult, MineruSettingsInput, ProviderKind,
+    PublicProviderSettings, TranslationSettingsInput,
 };

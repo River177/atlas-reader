@@ -1,20 +1,25 @@
 import type {
   CommandId,
   CommandReceipt,
+  ConnectionTestResult,
   DocumentId,
   DocumentSummary,
   ImportPdfResult,
   LibraryPage,
   LibraryQuery,
+  MineruSettingsInput,
   OpenedReaderDocument,
   OpenSessionInput,
   OpenSessionResult,
+  ProviderKind,
+  PublicProviderSettings,
   ReadingCommand,
   ReadingPosition,
   ReadingPositionUpdate,
   ReaderSourceToken,
   RefreshSourcesResult,
   SessionId,
+  TranslationSettingsInput,
 } from "@atlas/contracts";
 
 export interface DispatchReadingCommandInput {
@@ -48,6 +53,11 @@ export interface AtlasBridge {
     position: ReadingPositionUpdate,
   ): Promise<ReadingPosition>;
   closeReader(sourceToken: ReaderSourceToken, finalPosition?: ReadingPositionUpdate): Promise<void>;
+  getProviderSettings(): Promise<PublicProviderSettings>;
+  saveMineruSettings(input: MineruSettingsInput): Promise<ConnectionTestResult>;
+  saveTranslationSettings(input: TranslationSettingsInput): Promise<ConnectionTestResult>;
+  testProviderConnection(provider: ProviderKind): Promise<ConnectionTestResult>;
+  deleteProviderSecret(provider: ProviderKind): Promise<void>;
   openReadingSession(input: OpenSessionInput): Promise<OpenSessionResult>;
   dispatchReadingCommand(input: DispatchReadingCommandInput): Promise<CommandReceipt>;
   closeReadingSession(sessionId: SessionId): Promise<void>;

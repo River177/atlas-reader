@@ -3,12 +3,14 @@ use std::{path::Path, str::FromStr};
 use async_trait::async_trait;
 use atlas_document_reader::{ReaderDocumentSource, ReaderStore};
 use atlas_domain::{
-    AtlasError, DocumentFileState, DocumentId, DocumentSummary, LibrarySort, ReadingPosition,
+    AtlasError, DocumentFileState, DocumentId, DocumentSummary, LibrarySort, ProviderKind,
+    ReadingPosition,
 };
 use atlas_library::{
     DocumentImport, DocumentListRequest, DocumentRecord, DocumentSourceUpdate, DocumentStore,
     StoredImport,
 };
+use atlas_provider_settings::{ADAPTER_PROTOCOL_VERSION, ProviderProfile, ProviderSettingsStore};
 use sqlx::{
     Row, SqlitePool,
     migrate::Migrator,
@@ -411,6 +413,117 @@ fn row_to_record(row: sqlx::sqlite::SqliteRow) -> Result<DocumentRecord, AtlasEr
     })
 }
 
+/// Provider configuration without credentials. API keys live in the operating
+/// system keychain, so this table only stores the account that points at them.
+#[derive(Clone, Debug)]
+pub struct SqliteProviderSettingsStore {
+    pool: SqlitePool,
+}
+
+impl SqliteProviderSettingsStore {
+    #[must_use]
+    pub fn new(database: &AtlasDatabase) -> Self {
+        Self {
+            pool: database.pool().clone(),
+        }
+    }
+}
+
+#[async_trait]
+impl ProviderSettingsStore for SqliteProviderSettingsStore {
+    async fn load_profiles(&self) -> Result<Vec<ProviderProfile>, AtlasError> {
+        let rows = sqlx::query(
+            "SELECT kind, endpoint_origin, base_path, endpoint_fingerprint, model_id,
+                    context_window_override, automatic_cloud_parsing_enabled, secret_account
+             FROM provider_profiles
+             ORDER BY kind",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+
+        rows.into_iter()
+            .map(|row| {
+                let kind: String = row.try_get("kind").map_err(map_sqlx)?;
+                let context_window_override: Option<i64> =
+                    row.try_get("context_window_override").map_err(map_sqlx)?;
+                Ok(ProviderProfile {
+                    kind: parse_provider_kind(&kind)?,
+                    endpoint_origin: row.try_get("endpoint_origin").map_err(map_sqlx)?,
+                    base_path: row.try_get("base_path").map_err(map_sqlx)?,
+                    endpoint_fingerprint: row.try_get("endpoint_fingerprint").map_err(map_sqlx)?,
+                    model_id: row.try_get("model_id").map_err(map_sqlx)?,
+                    context_window_override: context_window_override
+                        .map(|value| {
+                            u32::try_from(value).map_err(|_| {
+                                AtlasError::storage("context window is outside u32 range")
+                            })
+                        })
+                        .transpose()?,
+                    automatic_cloud_parsing_enabled: row
+                        .try_get::<i64, _>("automatic_cloud_parsing_enabled")
+                        .map_err(map_sqlx)?
+                        != 0,
+                    secret_account: row.try_get("secret_account").map_err(map_sqlx)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn save_profile(
+        &self,
+        profile: &ProviderProfile,
+        saved_at: u64,
+    ) -> Result<(), AtlasError> {
+        let saved_at = to_i64(saved_at, "provider save time")?;
+        let context_window_override = profile.context_window_override.map(i64::from);
+
+        sqlx::query(
+            "INSERT INTO provider_profiles (
+                id, kind, display_name, endpoint_origin, base_path, endpoint_fingerprint,
+                adapter_protocol_version, model_id, context_window_override, secret_account,
+                automatic_cloud_parsing_enabled, created_at, updated_at
+             ) VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+             ON CONFLICT(id) DO UPDATE SET
+                endpoint_origin = excluded.endpoint_origin,
+                base_path = excluded.base_path,
+                endpoint_fingerprint = excluded.endpoint_fingerprint,
+                adapter_protocol_version = excluded.adapter_protocol_version,
+                model_id = excluded.model_id,
+                context_window_override = excluded.context_window_override,
+                secret_account = excluded.secret_account,
+                automatic_cloud_parsing_enabled = excluded.automatic_cloud_parsing_enabled,
+                updated_at = excluded.updated_at",
+        )
+        .bind(profile.kind.as_str())
+        .bind(profile.kind.display_name())
+        .bind(&profile.endpoint_origin)
+        .bind(&profile.base_path)
+        .bind(&profile.endpoint_fingerprint)
+        .bind(ADAPTER_PROTOCOL_VERSION)
+        .bind(profile.model_id.as_deref())
+        .bind(context_window_override)
+        .bind(&profile.secret_account)
+        .bind(i64::from(profile.automatic_cloud_parsing_enabled))
+        .bind(saved_at)
+        .execute(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+
+        Ok(())
+    }
+}
+
+fn parse_provider_kind(value: &str) -> Result<ProviderKind, AtlasError> {
+    match value {
+        "cloud_mineru" => Ok(ProviderKind::Mineru),
+        "openai_compatible" => Ok(ProviderKind::Translation),
+        _ => Err(AtlasError::storage(format!(
+            "unknown provider kind: {value}"
+        ))),
+    }
+}
+
 fn parse_file_state(value: &str) -> Result<DocumentFileState, AtlasError> {
     match value {
         "available" => Ok(DocumentFileState::Available),
@@ -531,5 +644,79 @@ mod tests {
         assert_eq!(duplicate.document.title, "Updated title");
         assert_eq!(duplicate.document.file_path, "/tmp/second.pdf");
         assert_eq!(sources.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn provider_profiles_upsert_by_kind_and_survive_reload() {
+        let database = AtlasDatabase::open_in_memory()
+            .await
+            .expect("database should open");
+        let store = SqliteProviderSettingsStore::new(&database);
+        let mineru = ProviderProfile {
+            kind: ProviderKind::Mineru,
+            endpoint_origin: "https://mineru.example.com".to_owned(),
+            base_path: "/api/v4".to_owned(),
+            endpoint_fingerprint: "fingerprint-1".to_owned(),
+            model_id: None,
+            context_window_override: None,
+            automatic_cloud_parsing_enabled: true,
+            secret_account: "atlas.cloud_mineru".to_owned(),
+        };
+        let translation = ProviderProfile {
+            kind: ProviderKind::Translation,
+            endpoint_origin: "https://models.example.com".to_owned(),
+            base_path: "/v1".to_owned(),
+            endpoint_fingerprint: "fingerprint-2".to_owned(),
+            model_id: Some("gpt-4o-mini".to_owned()),
+            context_window_override: Some(128_000),
+            automatic_cloud_parsing_enabled: false,
+            secret_account: "atlas.openai_compatible".to_owned(),
+        };
+
+        store
+            .save_profile(&mineru, 10)
+            .await
+            .expect("mineru profile should save");
+        store
+            .save_profile(&translation, 11)
+            .await
+            .expect("translation profile should save");
+        store
+            .save_profile(
+                &ProviderProfile {
+                    base_path: "/api/v5".to_owned(),
+                    automatic_cloud_parsing_enabled: false,
+                    ..mineru.clone()
+                },
+                12,
+            )
+            .await
+            .expect("mineru profile should update in place");
+
+        let profiles = store
+            .load_profiles()
+            .await
+            .expect("profiles should load")
+            .into_iter()
+            .map(|profile| (profile.kind, profile))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(profiles.len(), 2);
+        let stored_mineru = &profiles[&ProviderKind::Mineru];
+        assert_eq!(stored_mineru.base_path, "/api/v5");
+        assert!(!stored_mineru.automatic_cloud_parsing_enabled);
+        assert_eq!(stored_mineru.endpoint_fingerprint, "fingerprint-1");
+        assert_eq!(profiles[&ProviderKind::Translation], translation);
+
+        let versions: Vec<String> =
+            sqlx::query_scalar("SELECT adapter_protocol_version FROM provider_profiles")
+                .fetch_all(database.pool())
+                .await
+                .expect("versions should load");
+        assert!(
+            versions
+                .iter()
+                .all(|version| version == ADAPTER_PROTOCOL_VERSION)
+        );
     }
 }

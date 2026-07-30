@@ -2,9 +2,14 @@ use std::{fs, sync::Arc};
 
 use atlas_document_reader::{DefaultDocumentReader, DocumentReaderModule, ReaderSourceRegistry};
 use atlas_domain::ReadingPositionUpdate;
-use atlas_domain::{DocumentFileState, LibraryQuery};
+use atlas_domain::{
+    DocumentFileState, LibraryQuery, MineruSettingsInput, TranslationSettingsInput,
+};
 use atlas_library::{DefaultLibraryModule, LibraryModule};
-use atlas_storage::{AtlasDatabase, SqliteDocumentStore};
+use atlas_provider_settings::{
+    DefaultProviderSettings, InMemorySecretStore, ProviderSettingsModule, ScriptedConnectionProbe,
+};
+use atlas_storage::{AtlasDatabase, SqliteDocumentStore, SqliteProviderSettingsStore};
 use lopdf::{Document, Object, dictionary};
 use tempfile::tempdir;
 
@@ -120,6 +125,68 @@ async fn reading_position_persists_across_database_reopen() {
     assert_eq!(reopened.position.page, 1);
     assert_eq!(reopened.position.page_offset_ratio, 0.6);
     assert_eq!(reopened.position.scale_value, "1.5");
+}
+
+#[tokio::test]
+async fn provider_settings_persist_across_database_reopen() {
+    let directory = tempdir().expect("temporary directory");
+    let database_path = directory.path().join("atlas.sqlite3");
+    let secrets = Arc::new(InMemorySecretStore::new());
+
+    {
+        let database = AtlasDatabase::open(&database_path)
+            .await
+            .expect("database should open");
+        let settings = DefaultProviderSettings::new(
+            Arc::new(SqliteProviderSettingsStore::new(&database)),
+            secrets.clone(),
+            Arc::new(ScriptedConnectionProbe::default()),
+        );
+        settings
+            .save_mineru(MineruSettingsInput {
+                endpoint: "https://mineru.example.com/api/v4".to_owned(),
+                api_key: Some("key-1".to_owned()),
+                automatic_cloud_parsing_enabled: true,
+            })
+            .await
+            .expect("mineru settings should save");
+        settings
+            .save_translation(TranslationSettingsInput {
+                base_url: "https://models.example.com/v1".to_owned(),
+                api_key: Some("key-2".to_owned()),
+                model_id: "gpt-4o-mini".to_owned(),
+                context_window_override: Some(128_000),
+            })
+            .await
+            .expect("translation settings should save");
+    }
+
+    let database = AtlasDatabase::open(&database_path)
+        .await
+        .expect("database should reopen");
+    let settings = DefaultProviderSettings::new(
+        Arc::new(SqliteProviderSettingsStore::new(&database)),
+        secrets,
+        Arc::new(ScriptedConnectionProbe::default()),
+    );
+    let restored = settings.get().await.expect("settings should load");
+
+    assert_eq!(
+        restored.mineru_endpoint.as_deref(),
+        Some("https://mineru.example.com/api/v4")
+    );
+    assert!(restored.mineru_has_secret);
+    assert!(restored.mineru_automatic_cloud_parsing_enabled);
+    assert_eq!(
+        restored.translation_base_url.as_deref(),
+        Some("https://models.example.com/v1")
+    );
+    assert_eq!(
+        restored.translation_model_id.as_deref(),
+        Some("gpt-4o-mini")
+    );
+    assert!(restored.translation_has_secret);
+    assert_eq!(restored.context_window_override, Some(128_000));
 }
 
 fn write_pdf(path: &std::path::Path) {

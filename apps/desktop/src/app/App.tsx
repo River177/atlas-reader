@@ -6,6 +6,8 @@ import { LibraryView } from "../features/library/LibraryView";
 import { useLibrary } from "../features/library/useLibrary";
 import { ReaderScreen } from "../features/reader/ReaderScreen";
 import type { PdfViewerFactory } from "../features/reader/pdf-viewer-module";
+import { SettingsScreen } from "../features/settings/SettingsScreen";
+import { WorkspaceSidebar, type WorkspaceView } from "./WorkspaceSidebar";
 
 interface AppProps {
   bridge?: AtlasBridge;
@@ -14,6 +16,7 @@ interface AppProps {
 
 export function App({ bridge = atlasBridge, viewerFactory }: AppProps) {
   const [activeDocument, setActiveDocument] = useState<DocumentSummary>();
+  const [view, setView] = useState<WorkspaceView>("library");
 
   if (activeDocument) {
     return (
@@ -26,51 +29,36 @@ export function App({ bridge = atlasBridge, viewerFactory }: AppProps) {
     );
   }
 
-  return <LibraryScreen bridge={bridge} onOpen={setActiveDocument} />;
+  if (view === "settings") {
+    return (
+      <div className="app-shell">
+        <WorkspaceSidebar activeView="settings" onNavigate={setView} />
+        <main className="workspace">
+          <SettingsScreen bridge={bridge} />
+        </main>
+      </div>
+    );
+  }
+
+  return <LibraryScreen bridge={bridge} onNavigate={setView} onOpen={setActiveDocument} />;
 }
 
 interface LibraryScreenProps {
   bridge: AtlasBridge;
+  onNavigate(view: WorkspaceView): void;
   onOpen(document: DocumentSummary): void;
 }
 
-function LibraryScreen({ bridge, onOpen }: LibraryScreenProps) {
+function LibraryScreen({ bridge, onNavigate, onOpen }: LibraryScreenProps) {
   const library = useLibrary(bridge);
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            A
-          </span>
-          <div>
-            <strong>Atlas Reader</strong>
-            <span>Local research desk</span>
-          </div>
-        </div>
-
-        <nav aria-label="Primary navigation">
-          <button className="nav-item nav-item--active" type="button">
-            <span>Library</span>
-            <span className="nav-count">{library.documents.length}</span>
-          </button>
-          <button className="nav-item" disabled type="button">
-            Reading queue
-          </button>
-          <button className="nav-item" disabled type="button">
-            Settings
-          </button>
-        </nav>
-
-        <div className="runtime-note">
-          <span className="status-dot" aria-hidden="true" />
-          <div>
-            <strong>Local core connected</strong>
-            <span>Schema v1 · Offline safe</span>
-          </div>
-        </div>
-      </aside>
+      <WorkspaceSidebar
+        activeView="library"
+        libraryCount={library.documents.length}
+        onNavigate={onNavigate}
+      />
 
       <main className="workspace">
         <header className="workspace-header">

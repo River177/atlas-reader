@@ -1088,31 +1088,32 @@ interface ProviderSettingsModule {
 
 interface MineruSettingsInput {
   endpoint: string;
-  apiKey?: string;
+  apiKey: string | null;
   automaticCloudParsingEnabled: boolean;
 }
 
 interface TranslationSettingsInput {
   baseUrl: string;
-  apiKey?: string;
+  apiKey: string | null;
   modelId: string;
-  contextWindowOverride?: number;
+  contextWindowOverride: number | null;
 }
 
 interface PublicProviderSettings {
-  mineruEndpoint?: string;
+  mineruEndpoint: string | null;
   mineruHasSecret: boolean;
   mineruAutomaticCloudParsingEnabled: boolean;
-  translationBaseUrl?: string;
-  translationModelId?: string;
+  translationBaseUrl: string | null;
+  translationModelId: string | null;
   translationHasSecret: boolean;
-  contextWindowOverride?: number;
+  contextWindowOverride: number | null;
 }
 
 interface ConnectionTestResult {
   ok: boolean;
   code:
     | "ok"
+    | "not_configured"
     | "invalid_url"
     | "insecure_remote_url"
     | "dns_failed"
@@ -1120,12 +1121,27 @@ interface ConnectionTestResult {
     | "unauthorized"
     | "rate_limited"
     | "protocol_incompatible"
+    | "server_error"
+    | "unreachable"
     | "timeout";
   message: string;
 }
 ```
 
 保存 Key 后，UI 只能获知“已配置”，不能读取明文。
+
+`apiKey` 为 `null` 表示保留 Keychain 中已有的密钥；传入空字符串会被拒绝，删除密钥必须调用
+`deleteSecret`。URL 非法时不写库、不写 Keychain、不发探测请求，直接返回失败结果；只有
+loopback 主机允许使用明文 HTTP。`deleteSecret("mineru")` 会连带关闭自动云解析开关。
+
+端点规范化后写入 `endpoint_fingerprint`，其值为
+`SHA-256(kind + "\n" + origin + base_path + "\n" + adapter_protocol_version)`，不包含 API Key，
+用于判断缓存是否仍然对应同一个 Provider。
+
+连接测试的约束：只跟随同源（scheme、host、port 完全一致）的重定向，因此 Bearer 凭据不会
+随跨源跳转或 HTTPS→HTTP 降级外泄；响应体读取上限 1 MiB，超限按 `protocol_incompatible`
+处理；本机 OpenAI 兼容服务允许不配置 Key，此时不发送 `Authorization` 头，而 Cloud MinerU
+在没有 Key 时直接返回 `unauthorized` 且不发起请求。
 
 ### 15.3 DocumentView Module
 

@@ -2,12 +2,13 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest";
 import type { DocumentSummary, ImportPdfResult } from "@atlas/contracts";
 
-import type { AtlasBridge, PdfDropEvent } from "../bridge";
+import type { PdfDropEvent } from "../bridge";
 import type {
   OpenPdfViewerInput,
   PdfViewerModule,
   PdfViewerState,
 } from "../features/reader/pdf-viewer-module";
+import { testBridge as bridge } from "../test/bridge";
 import { App } from "./App";
 
 function document(overrides: Partial<DocumentSummary> = {}): DocumentSummary {
@@ -20,30 +21,6 @@ function document(overrides: Partial<DocumentSummary> = {}): DocumentSummary {
     sourceState: "available",
     lastOpenedAt: 1,
     ...overrides,
-  };
-}
-
-function bridge(): AtlasBridge {
-  return {
-    pickPdfPaths: vi.fn().mockResolvedValue([]),
-    subscribePdfDrops: vi.fn().mockResolvedValue(() => undefined),
-    confirmDocumentRemoval: vi.fn().mockResolvedValue(true),
-    importPdf: vi.fn(),
-    queryLibrary: vi.fn().mockResolvedValue({
-      items: [],
-      nextCursor: null,
-    }),
-    refreshLibrarySources: vi.fn().mockResolvedValue({
-      updated: [],
-    }),
-    relocateDocument: vi.fn(),
-    removeDocument: vi.fn(),
-    openReader: vi.fn(),
-    saveReadingPosition: vi.fn(),
-    closeReader: vi.fn(),
-    openReadingSession: vi.fn(),
-    dispatchReadingCommand: vi.fn(),
-    closeReadingSession: vi.fn(),
   };
 }
 
@@ -388,5 +365,36 @@ describe("App", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("database unavailable");
     expect(screen.getByText("Local core connected")).toBeInTheDocument();
+  });
+
+  it("moves between the library and the provider settings", async () => {
+    const testBridge = bridge();
+
+    render(<App bridge={testBridge} />);
+
+    await screen.findByRole("heading", {
+      name: "Read difficult papers without losing the thread.",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Connect the services Atlas is allowed to call.",
+      }),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Settings" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(testBridge.getProviderSettings).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Library/ }));
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Read difficult papers without losing the thread.",
+      }),
+    ).toBeVisible();
   });
 });

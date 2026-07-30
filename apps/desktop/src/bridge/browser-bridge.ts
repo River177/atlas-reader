@@ -43,6 +43,29 @@ export const browserBridge: AtlasBridge = {
   async closeReader() {
     return unavailable("closeReader");
   },
+  async getProviderSettings() {
+    return {
+      mineruEndpoint: null,
+      mineruHasSecret: false,
+      mineruAutomaticCloudParsingEnabled: false,
+      translationBaseUrl: null,
+      translationModelId: null,
+      translationHasSecret: false,
+      contextWindowOverride: null,
+    };
+  },
+  async saveMineruSettings() {
+    return unavailable("saveMineruSettings");
+  },
+  async saveTranslationSettings() {
+    return unavailable("saveTranslationSettings");
+  },
+  async testProviderConnection() {
+    return unavailable("testProviderConnection");
+  },
+  async deleteProviderSecret() {
+    return unavailable("deleteProviderSecret");
+  },
   async openReadingSession() {
     return unavailable("openReadingSession");
   },

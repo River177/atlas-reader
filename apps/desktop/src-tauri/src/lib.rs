@@ -5,11 +5,14 @@ mod pdf_protocol;
 use std::sync::Arc;
 
 use app_state::AppState;
-use atlas_adapters::UnconfiguredProviderStatusAdapter;
+use atlas_adapters::{
+    HttpConnectionProbe, MacOsKeychainAdapter, UnconfiguredProviderStatusAdapter,
+};
 use atlas_document_reader::{DefaultDocumentReader, ReaderSourceRegistry};
 use atlas_library::DefaultLibraryModule;
+use atlas_provider_settings::DefaultProviderSettings;
 use atlas_reading_session::DefaultReadingSession;
-use atlas_storage::{AtlasDatabase, SqliteDocumentStore};
+use atlas_storage::{AtlasDatabase, SqliteDocumentStore, SqliteProviderSettingsStore};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -36,9 +39,19 @@ pub fn run() {
             let library = Arc::new(DefaultLibraryModule::new(document_store.clone()));
             let document_reader =
                 Arc::new(DefaultDocumentReader::new(document_store, module_sources));
+            let provider_settings = Arc::new(DefaultProviderSettings::new(
+                Arc::new(SqliteProviderSettingsStore::new(&database)),
+                Arc::new(MacOsKeychainAdapter::new()),
+                Arc::new(HttpConnectionProbe::new()?),
+            ));
             let providers = Arc::new(UnconfiguredProviderStatusAdapter);
             let reading_session = Arc::new(DefaultReadingSession::new(providers));
-            app.manage(AppState::new(library, document_reader, reading_session));
+            app.manage(AppState::new(
+                library,
+                document_reader,
+                provider_settings,
+                reading_session,
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -47,6 +60,11 @@ pub fn run() {
             commands::library::library_refresh_sources,
             commands::library::library_relocate,
             commands::library::library_remove,
+            commands::provider_settings::provider_settings_delete_secret,
+            commands::provider_settings::provider_settings_get,
+            commands::provider_settings::provider_settings_save_mineru,
+            commands::provider_settings::provider_settings_save_translation,
+            commands::provider_settings::provider_settings_test,
             commands::reader::reader_close,
             commands::reader::reader_open,
             commands::reader::reader_save_position,

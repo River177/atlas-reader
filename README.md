@@ -33,6 +33,24 @@ Completed vertical slices:
 
 The next vertical slice is automatic Cloud MinerU parsing of an imported paper.
 
+### Cloud MinerU protocol verification
+
+The Cloud MinerU risk spike ran against the live API on 2026-07-30, so the parsing slice is designed
+against measured behaviour rather than documentation. Ten arXiv papers finished within 120 seconds
+each, at a P75 of 25.8 seconds and a worst case of 68.8 seconds for a 75-page paper. The upload,
+polling, download, result layout, coordinate system, and error envelopes are recorded in section 18
+of the product specification.
+
+`crates/atlas-adapters/tests/live_mineru.rs` pins the connection probe against the real endpoint. It
+is skipped unless `ATLAS_LIVE_MINERU=1` is set, so ordinary runs and CI stay offline and free:
+
+```sh
+ATLAS_LIVE_MINERU=1 cargo test -p atlas-adapters --test live_mineru
+```
+
+The test reads its credential from the same Keychain entry the application writes, so no key is
+needed in the environment or the repository. Save a Cloud MinerU key in Atlas settings first.
+
 ## MVP direction
 
 - Lightweight local paper library

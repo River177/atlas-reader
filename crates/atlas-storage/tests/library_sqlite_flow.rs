@@ -1,5 +1,7 @@
 use std::{fs, sync::Arc};
 
+use atlas_document_reader::{DefaultDocumentReader, DocumentReaderModule, ReaderSourceRegistry};
+use atlas_domain::ReadingPositionUpdate;
 use atlas_domain::{DocumentFileState, LibraryQuery};
 use atlas_library::{DefaultLibraryModule, LibraryModule};
 use atlas_storage::{AtlasDatabase, SqliteDocumentStore};
@@ -67,6 +69,57 @@ async fn library_flow_persists_across_database_reopen() {
             .items
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn reading_position_persists_across_database_reopen() {
+    let directory = tempdir().expect("temporary directory");
+    let database_path = directory.path().join("atlas.sqlite3");
+    let pdf = directory.path().join("paper.pdf");
+    write_pdf(&pdf);
+
+    let imported_id = {
+        let database = AtlasDatabase::open(&database_path)
+            .await
+            .expect("database should open");
+        let store = Arc::new(SqliteDocumentStore::new(&database));
+        let library = DefaultLibraryModule::new(store.clone());
+        let imported = library
+            .import_pdf(path_string(&pdf))
+            .await
+            .expect("import should succeed");
+        let reader = DefaultDocumentReader::new(store, Arc::new(ReaderSourceRegistry::default()));
+        let opened = reader
+            .open(imported.document.id.clone())
+            .await
+            .expect("reader should open");
+        reader
+            .close(
+                &opened.source_token,
+                Some(ReadingPositionUpdate {
+                    page: 1,
+                    page_offset_ratio: 0.6,
+                    scale_value: "1.5".to_owned(),
+                }),
+            )
+            .await
+            .expect("reader should close");
+        imported.document.id
+    };
+
+    let database = AtlasDatabase::open(&database_path)
+        .await
+        .expect("database should reopen");
+    let store = Arc::new(SqliteDocumentStore::new(&database));
+    let reader = DefaultDocumentReader::new(store, Arc::new(ReaderSourceRegistry::default()));
+    let reopened = reader
+        .open(imported_id)
+        .await
+        .expect("reader should restore");
+
+    assert_eq!(reopened.position.page, 1);
+    assert_eq!(reopened.position.page_offset_ratio, 0.6);
+    assert_eq!(reopened.position.scale_value, "1.5");
 }
 
 fn write_pdf(path: &std::path::Path) {

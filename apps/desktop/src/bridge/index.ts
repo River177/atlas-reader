@@ -6,4 +6,8 @@ const isTauriRuntime = typeof window !== "undefined" && "__TAURI_INTERNALS__" in
 
 export const atlasBridge: AtlasBridge = isTauriRuntime ? tauriBridge : browserBridge;
 
-export type { AtlasBridge, PdfDropEvent } from "./atlas-bridge";
+export type {
+  AtlasBridge,
+  OpenedReaderView,
+  PdfDropEvent,
+} from "./atlas-bridge";

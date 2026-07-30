@@ -38,4 +38,5 @@ string_id!(ChapterId);
 string_id!(CommandId);
 string_id!(DocumentId);
 string_id!(JobId);
+string_id!(ReaderSourceToken);
 string_id!(SessionId);

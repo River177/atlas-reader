@@ -120,6 +120,7 @@ version = "0.1.0"
 dependencies = [
  "atlas-adapters",
  "atlas-contracts",
+ "atlas-document-reader",
  "atlas-library",
  "atlas-reading-session",
  "atlas-storage",
@@ -127,6 +128,18 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tempfile",
+]
+
+[[package]]
+name = "atlas-document-reader"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "atlas-domain",
+ "tempfile",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -167,6 +180,7 @@ name = "atlas-storage"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "atlas-document-reader",
  "atlas-domain",
  "atlas-library",
  "lopdf",

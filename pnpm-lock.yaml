@@ -40,6 +40,9 @@ importers:
       "@tauri-apps/plugin-dialog":
         specifier: ^2.7.2
         version: 2.7.2
+      pdfjs-dist:
+        specifier: ^6.1.200
+        version: 6.1.200
       react:
         specifier: ^19.2.0
         version: 19.2.8
@@ -777,6 +780,129 @@ packages:
         tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@jridgewell/trace-mapping/-/trace-mapping-0.3.31.tgz,
       }
 
+  "@napi-rs/canvas-android-arm64@1.0.2":
+    resolution:
+      {
+        integrity: sha1-jUVdBqjygqSRi/Ez3Qhdupt0YGI=,
+        tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@napi-rs/canvas-android-arm64/-/canvas-android-arm64-1.0.2.tgz,
+      }
+    engines: { node: ">= 10" }
+    cpu: [arm64]
+    os: [android]
+
+  "@napi-rs/canvas-darwin-arm64@1.0.2":
+    resolution:
+      {
+        integrity: sha1-n0znqx+bwQVjinQydK8DVxv1bP8=,
+        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@napi-rs/canvas-darwin-arm64/-/canvas-darwin-arm64-1.0.2.tgz,
+      }
+    engines: { node: ">= 10" }
+    cpu: [arm64]
+    os: [darwin]
+
+  "@napi-rs/canvas-darwin-x64@1.0.2":
+    resolution:
+      {
+        integrity: sha1-X/mTWFb6NAnLAvoXzYUwBeoffYg=,
+        tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@napi-rs/canvas-darwin-x64/-/canvas-darwin-x64-1.0.2.tgz,
+      }
+    engines: { node: ">= 10" }
+    cpu: [x64]
+    os: [darwin]
+
+  "@napi-rs/canvas-linux-arm-gnueabihf@1.0.2":
+    resolution:
+      {
+        integrity: sha1-++4fOk1qJ/G+VTmUh8K/NCucO7Y=,
+        tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@napi-rs/canvas-linux-arm-gnueabihf/-/canvas-linux-arm-gnueabihf-1.0.2.tgz,
+      }
+    engines: { node: ">= 10" }
+    cpu: [arm]
+    os: [linux]
+
+  "@napi-rs/canvas-linux-arm64-gnu@1.0.2":
+    resolution:
+      {
+        integrity: sha1-ZDLLhhNwQ38LEgb+Re0MvUyjK/Q=,
+        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@napi-rs/canvas-linux-arm64-gnu/-/canvas-linux-arm64-gnu-1.0.2.tgz,
+      }
+    engines: { node: ">= 10" }
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  "@napi-rs/canvas-linux-arm64-musl@1.0.2":
+    resolution:
+      {
+        integrity: sha1-ZURXdDYrmQGVZlziwUYFo0LIOIc=,
+        tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@napi-rs/canvas-linux-arm64-musl/-/canvas-linux-arm64-musl-1.0.2.tgz,
+      }
+    engines: { node: ">= 10" }
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  "@napi-rs/canvas-linux-riscv64-gnu@1.0.2":
+    resolution:
+      {
+        integrity: sha1-ULJ+W7f/2vjauz423K4uuIKz2TQ=,
+        tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@napi-rs/canvas-linux-riscv64-gnu/-/canvas-linux-riscv64-gnu-1.0.2.tgz,
+      }
+    engines: { node: ">= 10" }
+    cpu: [riscv64]
+    os: [linux]
+    libc: [glibc]
+
+  "@napi-rs/canvas-linux-x64-gnu@1.0.2":
+    resolution:
+      {
+        integrity: sha1-gOfVc+oDAdSOXeMM2YPb132oiNE=,
+        tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@napi-rs/canvas-linux-x64-gnu/-/canvas-linux-x64-gnu-1.0.2.tgz,
+      }
+    engines: { node: ">= 10" }
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  "@napi-rs/canvas-linux-x64-musl@1.0.2":
+    resolution:
+      {
+        integrity: sha1-n+OlDOwJMc0vIA2Ke6yR2LDd1aA=,
+        tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@napi-rs/canvas-linux-x64-musl/-/canvas-linux-x64-musl-1.0.2.tgz,
+      }
+    engines: { node: ">= 10" }
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  "@napi-rs/canvas-win32-arm64-msvc@1.0.2":
+    resolution:
+      {
+        integrity: sha1-0w4oQfM2Av+ev3L8Aovu7hV398g=,
+        tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@napi-rs/canvas-win32-arm64-msvc/-/canvas-win32-arm64-msvc-1.0.2.tgz,
+      }
+    engines: { node: ">= 10" }
+    cpu: [arm64]
+    os: [win32]
+
+  "@napi-rs/canvas-win32-x64-msvc@1.0.2":
+    resolution:
+      {
+        integrity: sha1-hhul5Ib/GqOB8yXCfOiM+fI3BiY=,
+        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@napi-rs/canvas-win32-x64-msvc/-/canvas-win32-x64-msvc-1.0.2.tgz,
+      }
+    engines: { node: ">= 10" }
+    cpu: [x64]
+    os: [win32]
+
+  "@napi-rs/canvas@1.0.2":
+    resolution:
+      {
+        integrity: sha1-YkMd86TIdQBuGYl5vrioc8vKDrA=,
+        tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@napi-rs/canvas/-/canvas-1.0.2.tgz,
+      }
+    engines: { node: ">= 10" }
+
   "@rolldown/pluginutils@1.0.0-rc.3":
     resolution:
       {
@@ -1211,7 +1337,7 @@ packages:
     resolution:
       {
         integrity: sha1-GjHD03iFDSd42rtjdNA23LpLpwg=,
-        tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@types/aria-query/-/aria-query-5.0.4.tgz,
+        tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@types/aria-query/-/aria-query-5.0.4.tgz,
       }
 
   "@types/babel__core@7.20.5":
@@ -1495,7 +1621,7 @@ packages:
     resolution:
       {
         integrity: sha1-CCyyyJyf6GWaMRpTvWpNxTAdswQ=,
-        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/ansi-regex/-/ansi-regex-5.0.1.tgz,
+        tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/ansi-regex/-/ansi-regex-5.0.1.tgz,
       }
     engines: { node: ">=8" }
 
@@ -1503,7 +1629,7 @@ packages:
     resolution:
       {
         integrity: sha1-B0SWkK1Fd30ZJKwquy/IiV26g2s=,
-        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/ansi-styles/-/ansi-styles-5.2.0.tgz,
+        tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/ansi-styles/-/ansi-styles-5.2.0.tgz,
       }
     engines: { node: ">=10" }
 
@@ -1670,7 +1796,7 @@ packages:
     resolution:
       {
         integrity: sha1-WnQp5gZus2ZNkR4z+w5F3o6whFM=,
-        tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/dom-accessibility-api/-/dom-accessibility-api-0.5.16.tgz,
+        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/dom-accessibility-api/-/dom-accessibility-api-0.5.16.tgz,
       }
 
   dom-accessibility-api@0.6.3:
@@ -2122,7 +2248,7 @@ packages:
     resolution:
       {
         integrity: sha1-watQ93iHtxJiEgG6n9Tjpu0JmUE=,
-        tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/lz-string/-/lz-string-1.5.0.tgz,
+        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/lz-string/-/lz-string-1.5.0.tgz,
       }
     hasBin: true
 
@@ -2249,6 +2375,14 @@ packages:
         tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/pathe/-/pathe-2.0.3.tgz,
       }
 
+  pdfjs-dist@6.1.200:
+    resolution:
+      {
+        integrity: sha1-TZVzd6tX45cXL8y5a/4Ajbyy3dY=,
+        tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/pdfjs-dist/-/pdfjs-dist-6.1.200.tgz,
+      }
+    engines: { node: ">=22.13.0 || >=24" }
+
   picocolors@1.1.1:
     resolution:
       {
@@ -2318,7 +2452,7 @@ packages:
     resolution:
       {
         integrity: sha1-5pHUqOnHiTZWVVOas3J2Kw77VPA=,
-        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/react-is/-/react-is-17.0.2.tgz,
+        tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/react-is/-/react-is-17.0.2.tgz,
       }
 
   react-refresh@0.18.0:
@@ -3094,6 +3228,54 @@ snapshots:
       "@jridgewell/resolve-uri": 3.1.2
       "@jridgewell/sourcemap-codec": 1.5.5
 
+  "@napi-rs/canvas-android-arm64@1.0.2":
+    optional: true
+
+  "@napi-rs/canvas-darwin-arm64@1.0.2":
+    optional: true
+
+  "@napi-rs/canvas-darwin-x64@1.0.2":
+    optional: true
+
+  "@napi-rs/canvas-linux-arm-gnueabihf@1.0.2":
+    optional: true
+
+  "@napi-rs/canvas-linux-arm64-gnu@1.0.2":
+    optional: true
+
+  "@napi-rs/canvas-linux-arm64-musl@1.0.2":
+    optional: true
+
+  "@napi-rs/canvas-linux-riscv64-gnu@1.0.2":
+    optional: true
+
+  "@napi-rs/canvas-linux-x64-gnu@1.0.2":
+    optional: true
+
+  "@napi-rs/canvas-linux-x64-musl@1.0.2":
+    optional: true
+
+  "@napi-rs/canvas-win32-arm64-msvc@1.0.2":
+    optional: true
+
+  "@napi-rs/canvas-win32-x64-msvc@1.0.2":
+    optional: true
+
+  "@napi-rs/canvas@1.0.2":
+    optionalDependencies:
+      "@napi-rs/canvas-android-arm64": 1.0.2
+      "@napi-rs/canvas-darwin-arm64": 1.0.2
+      "@napi-rs/canvas-darwin-x64": 1.0.2
+      "@napi-rs/canvas-linux-arm-gnueabihf": 1.0.2
+      "@napi-rs/canvas-linux-arm64-gnu": 1.0.2
+      "@napi-rs/canvas-linux-arm64-musl": 1.0.2
+      "@napi-rs/canvas-linux-riscv64-gnu": 1.0.2
+      "@napi-rs/canvas-linux-x64-gnu": 1.0.2
+      "@napi-rs/canvas-linux-x64-musl": 1.0.2
+      "@napi-rs/canvas-win32-arm64-msvc": 1.0.2
+      "@napi-rs/canvas-win32-x64-msvc": 1.0.2
+    optional: true
+
   "@rolldown/pluginutils@1.0.0-rc.3": {}
 
   "@rollup/rollup-android-arm-eabi@4.62.2":
@@ -3834,6 +4016,10 @@ snapshots:
   path-key@3.1.1: {}
 
   pathe@2.0.3: {}
+
+  pdfjs-dist@6.1.200:
+    optionalDependencies:
+      "@napi-rs/canvas": 1.0.2
 
   picocolors@1.1.1: {}
 

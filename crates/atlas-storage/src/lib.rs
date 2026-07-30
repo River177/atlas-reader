@@ -1,7 +1,10 @@
 use std::{path::Path, str::FromStr};
 
 use async_trait::async_trait;
-use atlas_domain::{AtlasError, DocumentFileState, DocumentId, DocumentSummary, LibrarySort};
+use atlas_document_reader::{ReaderDocumentSource, ReaderStore};
+use atlas_domain::{
+    AtlasError, DocumentFileState, DocumentId, DocumentSummary, LibrarySort, ReadingPosition,
+};
 use atlas_library::{
     DocumentImport, DocumentListRequest, DocumentRecord, DocumentSourceUpdate, DocumentStore,
     StoredImport,
@@ -248,6 +251,110 @@ impl DocumentStore for SqliteDocumentStore {
             .await
             .map_err(map_sqlx)?;
         Ok(result.rows_affected() > 0)
+    }
+}
+
+#[async_trait]
+impl ReaderStore for SqliteDocumentStore {
+    async fn open_source(
+        &self,
+        document_id: &DocumentId,
+        opened_at: u64,
+    ) -> Result<Option<ReaderDocumentSource>, AtlasError> {
+        let mut transaction = self.pool.begin().await.map_err(map_sqlx)?;
+        let updated = sqlx::query(
+            "UPDATE documents
+             SET last_opened_at = ?2, updated_at = ?2
+             WHERE id = ?1",
+        )
+        .bind(document_id.as_str())
+        .bind(to_i64(opened_at, "opened time")?)
+        .execute(&mut *transaction)
+        .await
+        .map_err(map_sqlx)?;
+        if updated.rows_affected() == 0 {
+            transaction.commit().await.map_err(map_sqlx)?;
+            return Ok(None);
+        }
+        let row = sqlx::query(
+            "SELECT id, sha256, title, authors_json, page_count, file_path,
+                    file_size_bytes, file_mtime_ms, file_state, last_opened_at
+             FROM documents
+             WHERE id = ?1",
+        )
+        .bind(document_id.as_str())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(map_sqlx)?;
+        transaction.commit().await.map_err(map_sqlx)?;
+        let record = row_to_record(row)?;
+
+        Ok(Some(ReaderDocumentSource {
+            document: record.summary(),
+            file_path: record.file_path,
+            file_size_bytes: record.file_size_bytes,
+            file_mtime_ms: record.file_mtime_ms,
+            file_state: record.file_state,
+        }))
+    }
+
+    async fn load_position(
+        &self,
+        document_id: &DocumentId,
+    ) -> Result<Option<ReadingPosition>, AtlasError> {
+        let row = sqlx::query(
+            "SELECT pdf_page, pdf_scroll_offset, pdf_scale_value, updated_at
+             FROM reading_positions
+             WHERE document_id = ?1 AND view_mode = 'pdf'",
+        )
+        .bind(document_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+
+        row.map(|row| {
+            Ok(ReadingPosition {
+                page: u32::try_from(row.try_get::<i64, _>("pdf_page").map_err(map_sqlx)?)
+                    .map_err(|_| AtlasError::storage("PDF page is outside u32 range"))?,
+                page_offset_ratio: row.try_get("pdf_scroll_offset").map_err(map_sqlx)?,
+                scale_value: row.try_get("pdf_scale_value").map_err(map_sqlx)?,
+                updated_at: to_u64(
+                    row.try_get::<i64, _>("updated_at").map_err(map_sqlx)?,
+                    "position update time",
+                )?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn save_position(
+        &self,
+        document_id: &DocumentId,
+        position: &ReadingPosition,
+    ) -> Result<(), AtlasError> {
+        sqlx::query(
+            "INSERT INTO reading_positions (
+               document_id, chapter_id, block_id, pdf_page, pdf_scroll_offset,
+               view_mode, updated_at, pdf_scale_value
+             ) VALUES (?1, NULL, NULL, ?2, ?3, 'pdf', ?4, ?5)
+             ON CONFLICT(document_id) DO UPDATE SET
+               chapter_id = NULL,
+               block_id = NULL,
+               pdf_page = excluded.pdf_page,
+               pdf_scroll_offset = excluded.pdf_scroll_offset,
+               view_mode = 'pdf',
+               updated_at = excluded.updated_at,
+               pdf_scale_value = excluded.pdf_scale_value",
+        )
+        .bind(document_id.as_str())
+        .bind(i64::from(position.page))
+        .bind(position.page_offset_ratio)
+        .bind(to_i64(position.updated_at, "position update time")?)
+        .bind(&position.scale_value)
+        .execute(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
     }
 }
 

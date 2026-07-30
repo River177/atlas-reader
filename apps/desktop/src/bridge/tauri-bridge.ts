@@ -3,7 +3,9 @@ import type {
   DocumentSummary,
   ImportPdfResult,
   LibraryPage,
+  OpenedReaderDocument,
   OpenSessionResult,
+  ReadingPosition,
   RefreshSourcesResult,
 } from "@atlas/contracts";
 import { invoke } from "@tauri-apps/api/core";
@@ -70,6 +72,28 @@ export const tauriBridge: AtlasBridge = {
   removeDocument(documentId) {
     return invoke<void>("library_remove", {
       input: { documentId },
+    });
+  },
+  async openReader(documentId) {
+    const opened = await invoke<OpenedReaderDocument>("reader_open", {
+      input: { documentId },
+    });
+    return {
+      ...opened,
+      sourceUrl: `atlas-reader://localhost/pdf/${encodeURIComponent(opened.sourceToken)}`,
+    };
+  },
+  saveReadingPosition(sourceToken, position) {
+    return invoke<ReadingPosition>("reader_save_position", {
+      input: { sourceToken, position },
+    });
+  },
+  closeReader(sourceToken, finalPosition) {
+    return invoke<void>("reader_close", {
+      input: {
+        sourceToken,
+        finalPosition: finalPosition ?? null,
+      },
     });
   },
   openReadingSession(input) {

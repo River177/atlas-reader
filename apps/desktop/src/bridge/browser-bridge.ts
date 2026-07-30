@@ -34,6 +34,15 @@ export const browserBridge: AtlasBridge = {
   async removeDocument() {
     return unavailable("removeDocument");
   },
+  async openReader() {
+    return unavailable("openReader");
+  },
+  async saveReadingPosition() {
+    return unavailable("saveReadingPosition");
+  },
+  async closeReader() {
+    return unavailable("closeReader");
+  },
   async openReadingSession() {
     return unavailable("openReadingSession");
   },

@@ -4,6 +4,7 @@ members = [
   "crates/atlas-adapters",
   "crates/atlas-contracts",
   "crates/atlas-domain",
+  "crates/atlas-document-reader",
   "crates/atlas-library",
   "crates/atlas-reading-session",
   "crates/atlas-storage",

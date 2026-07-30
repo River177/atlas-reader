@@ -8,11 +8,11 @@ authors.workspace = true
 [dependencies]
 async-trait.workspace = true
 atlas-domain = { path = "../atlas-domain" }
+tokio.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27.0"
-tokio.workspace = true
 
 [lints]
 workspace = true

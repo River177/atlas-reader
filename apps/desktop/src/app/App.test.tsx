@@ -3,6 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import type { DocumentSummary, ImportPdfResult } from "@atlas/contracts";
 
 import type { AtlasBridge, PdfDropEvent } from "../bridge";
+import type {
+  OpenPdfViewerInput,
+  PdfViewerModule,
+  PdfViewerState,
+} from "../features/reader/pdf-viewer-module";
 import { App } from "./App";
 
 function document(overrides: Partial<DocumentSummary> = {}): DocumentSummary {
@@ -33,10 +38,69 @@ function bridge(): AtlasBridge {
     }),
     relocateDocument: vi.fn(),
     removeDocument: vi.fn(),
+    openReader: vi.fn(),
+    saveReadingPosition: vi.fn(),
+    closeReader: vi.fn(),
     openReadingSession: vi.fn(),
     dispatchReadingCommand: vi.fn(),
     closeReadingSession: vi.fn(),
   };
+}
+
+class FakePdfViewer implements PdfViewerModule {
+  input: OpenPdfViewerInput | undefined;
+  state: PdfViewerState = {
+    page: 1,
+    pageCount: 12,
+    scaleValue: "page-width",
+    searchCurrent: 0,
+    searchTotal: 0,
+    loadingProgress: undefined,
+  };
+  position = {
+    page: 1,
+    pageOffsetRatio: 0,
+    scaleValue: "page-width",
+  };
+
+  open = vi.fn(async (input: OpenPdfViewerInput) => {
+    this.input = input;
+    this.position = {
+      page: input.initialPosition.page,
+      pageOffsetRatio: input.initialPosition.pageOffsetRatio,
+      scaleValue: input.initialPosition.scaleValue,
+    };
+    this.state = {
+      ...this.state,
+      page: input.initialPosition.page,
+      scaleValue: input.initialPosition.scaleValue,
+    };
+    input.onStateChange(this.state);
+  });
+
+  setPage = vi.fn((page: number) => {
+    this.state = { ...this.state, page };
+    this.position = { ...this.position, page };
+    this.input?.onStateChange(this.state);
+  });
+
+  zoomIn = vi.fn();
+  zoomOut = vi.fn();
+  setScale = vi.fn((scaleValue: string) => {
+    this.state = { ...this.state, scaleValue };
+    this.position = { ...this.position, scaleValue };
+    this.input?.onStateChange(this.state);
+  });
+  search = vi.fn();
+  findNext = vi.fn();
+  findPrevious = vi.fn();
+  currentPosition = vi.fn(() => this.position);
+  close = vi.fn(async () => undefined);
+
+  emitPosition(position: typeof this.position) {
+    this.position = position;
+    this.input?.onPositionChange(position);
+  }
 }
 
 describe("App", () => {
@@ -166,6 +230,135 @@ describe("App", () => {
     expect(await screen.findByText(/restored\.pdf/)).toBeInTheDocument();
     expect(testBridge.pickPdfPaths).toHaveBeenCalledWith(false);
     expect(testBridge.relocateDocument).toHaveBeenCalledWith("document-1", "/papers/restored.pdf");
+  });
+
+  it("opens the PDF reader, navigates, searches, and saves the final position", async () => {
+    const testBridge = bridge();
+    const paper = document();
+    const viewer = new FakePdfViewer();
+    const viewerFactory = vi.fn(async () => viewer);
+    vi.mocked(testBridge.queryLibrary).mockResolvedValue({
+      items: [paper],
+      nextCursor: null,
+    });
+    vi.mocked(testBridge.openReader).mockResolvedValue({
+      document: paper,
+      sourceToken: "reader-token",
+      sourceUrl: "atlas-reader://localhost/pdf/reader-token",
+      position: {
+        page: 1,
+        pageOffsetRatio: 0.2,
+        scaleValue: "page-width",
+        updatedAt: 1,
+      },
+    });
+    render(<App bridge={testBridge} viewerFactory={viewerFactory} />);
+    await screen.findByText("Atlas Retrieval");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+    expect(await screen.findByLabelText("Find in paper")).toBeInTheDocument();
+    expect(testBridge.openReader).toHaveBeenCalledWith("document-1");
+    expect(viewer.open).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceUrl: "atlas-reader://localhost/pdf/reader-token",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(viewer.setPage).toHaveBeenCalledWith(2);
+    fireEvent.change(screen.getByLabelText("Find in paper"), {
+      target: { value: "retrieval" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+    expect(viewer.search).toHaveBeenCalledWith("retrieval");
+    act(() => {
+      viewer.emitPosition({
+        page: 4,
+        pageOffsetRatio: 0.65,
+        scaleValue: "1.25",
+      });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "← Library" }));
+
+    await waitFor(() => {
+      expect(testBridge.closeReader).toHaveBeenCalledWith("reader-token", {
+        page: 4,
+        pageOffsetRatio: 0.65,
+        scaleValue: "1.25",
+      });
+    });
+    expect(viewer.close).toHaveBeenCalledOnce();
+  });
+
+  it("throttles periodic reading-position persistence", async () => {
+    const testBridge = bridge();
+    const paper = document();
+    const viewer = new FakePdfViewer();
+    vi.mocked(testBridge.queryLibrary).mockResolvedValue({
+      items: [paper],
+      nextCursor: null,
+    });
+    vi.mocked(testBridge.openReader).mockResolvedValue({
+      document: paper,
+      sourceToken: "reader-token",
+      sourceUrl: "atlas-reader://localhost/pdf/reader-token",
+      position: {
+        page: 1,
+        pageOffsetRatio: 0,
+        scaleValue: "page-width",
+        updatedAt: 1,
+      },
+    });
+    render(<App bridge={testBridge} viewerFactory={async () => viewer} />);
+    await screen.findByText("Atlas Retrieval");
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    await screen.findByLabelText("Find in paper");
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        viewer.emitPosition({
+          page: 2,
+          pageOffsetRatio: 0.4,
+          scaleValue: "page-fit",
+        });
+        vi.advanceTimersByTime(749);
+      });
+      expect(testBridge.saveReadingPosition).not.toHaveBeenCalled();
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+        await Promise.resolve();
+      });
+      expect(testBridge.saveReadingPosition).toHaveBeenCalledWith("reader-token", {
+        page: 2,
+        pageOffsetRatio: 0.4,
+        scaleValue: "page-fit",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows reader-open failures and returns to the library", async () => {
+    const testBridge = bridge();
+    const paper = document();
+    vi.mocked(testBridge.queryLibrary).mockResolvedValue({
+      items: [paper],
+      nextCursor: null,
+    });
+    vi.mocked(testBridge.openReader).mockRejectedValue({
+      code: "source_missing",
+      message: "The selected PDF no longer exists",
+      recoverable: true,
+    });
+    render(<App bridge={testBridge} viewerFactory={async () => new FakePdfViewer()} />);
+    await screen.findByText("Atlas Retrieval");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("The selected PDF no longer exists");
+    fireEvent.click(screen.getByRole("button", { name: "Return to library" }));
+    expect(await screen.findByText("Atlas Retrieval")).toBeInTheDocument();
   });
 
   it("reports an import failure without discarding the current library", async () => {

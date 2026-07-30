@@ -11,9 +11,20 @@ user-supplied API key, while translation uses a user-configured OpenAI-compatibl
 
 Atlas Reader is in foundation development. The repository contains a runnable Tauri 2 desktop shell,
 a React and TypeScript frontend, Rust domain modules, SQLite migrations, generated TypeScript
-contracts, and foundational tests. The first vertical slice is complete: users can import PDFs from
-the native picker or drag and drop, search the local library, detect duplicates, refresh source
-status, relocate moved files, and remove records without deleting the original PDF.
+contracts, and foundational tests.
+
+Completed vertical slices:
+
+1. **Local library import** — import PDFs from the native picker or drag and drop, search the local
+   library, detect duplicates, refresh source status, relocate moved files, and remove records
+   without deleting the original PDF.
+2. **Original PDF reading** — open an imported paper in an embedded PDF.js viewer with page
+   navigation, zoom, in-document search, and a reading position that survives closing the reader and
+   restarting the application. The viewer reaches the PDF through a capability-token URL served by a
+   dedicated `atlas-reader://` protocol, so absolute file paths never reach the frontend and a token
+   stops working as soon as the source file changes or the reader closes.
+
+The next vertical slice is automatic Cloud MinerU parsing with a user-supplied API key.
 
 ## MVP direction
 
@@ -37,6 +48,8 @@ The repository is a Cargo and pnpm workspace:
 apps/desktop              Tauri shell and React frontend
 crates/atlas-domain       Framework-independent domain and IPC types
 crates/atlas-library      Deep local-library module
+crates/atlas-document-reader
+                          Reader module: source authorization and reading position
 crates/atlas-reading-session
                           ReadingSession interface and implementation
 crates/atlas-storage      SQLite migrations and storage adapters

@@ -1,12 +1,40 @@
+import { useState } from "react";
+import type { DocumentSummary } from "@atlas/contracts";
+
 import { atlasBridge, type AtlasBridge } from "../bridge";
 import { LibraryView } from "../features/library/LibraryView";
 import { useLibrary } from "../features/library/useLibrary";
+import { ReaderScreen } from "../features/reader/ReaderScreen";
+import type { PdfViewerFactory } from "../features/reader/pdf-viewer-module";
 
 interface AppProps {
   bridge?: AtlasBridge;
+  viewerFactory?: PdfViewerFactory;
 }
 
-export function App({ bridge = atlasBridge }: AppProps) {
+export function App({ bridge = atlasBridge, viewerFactory }: AppProps) {
+  const [activeDocument, setActiveDocument] = useState<DocumentSummary>();
+
+  if (activeDocument) {
+    return (
+      <ReaderScreen
+        bridge={bridge}
+        document={activeDocument}
+        onBack={() => setActiveDocument(undefined)}
+        {...(viewerFactory ? { viewerFactory } : {})}
+      />
+    );
+  }
+
+  return <LibraryScreen bridge={bridge} onOpen={setActiveDocument} />;
+}
+
+interface LibraryScreenProps {
+  bridge: AtlasBridge;
+  onOpen(document: DocumentSummary): void;
+}
+
+function LibraryScreen({ bridge, onOpen }: LibraryScreenProps) {
   const library = useLibrary(bridge);
 
   return (
@@ -118,6 +146,7 @@ export function App({ bridge = atlasBridge }: AppProps) {
             error={library.error}
             loading={library.loading}
             onImport={() => void library.importFromPicker()}
+            onOpen={onOpen}
             onRelocate={(document) => void library.relocate(document)}
             onRemove={(document) => void library.remove(document)}
           />

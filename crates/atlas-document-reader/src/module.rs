@@ -10,6 +10,7 @@ use atlas_domain::{
     AtlasError, DocumentFileState, DocumentId, OpenedReaderDocument, ReaderSourceToken,
     ReadingPosition, ReadingPositionUpdate,
 };
+use tokio::sync::Mutex;
 
 use crate::{AuthorizedPdfSource, ReaderSourceRegistry, ReaderStore};
 
@@ -33,6 +34,9 @@ pub trait DocumentReaderModule: Send + Sync {
 pub struct DefaultDocumentReader {
     store: Arc<dyn ReaderStore>,
     sources: Arc<ReaderSourceRegistry>,
+    /// Serializes token issue, revoke, and position writes so a revoked token
+    /// can never persist a position after a newer session was opened.
+    transitions: Mutex<()>,
 }
 
 impl std::fmt::Debug for DefaultDocumentReader {
@@ -46,13 +50,40 @@ impl std::fmt::Debug for DefaultDocumentReader {
 impl DefaultDocumentReader {
     #[must_use]
     pub fn new(store: Arc<dyn ReaderStore>, sources: Arc<ReaderSourceRegistry>) -> Self {
-        Self { store, sources }
+        Self {
+            store,
+            sources,
+            transitions: Mutex::new(()),
+        }
+    }
+
+    async fn persist_position(
+        &self,
+        source_token: &ReaderSourceToken,
+        update: ReadingPositionUpdate,
+    ) -> Result<ReadingPosition, AtlasError> {
+        let source = self
+            .sources
+            .resolve(source_token)?
+            .ok_or_else(|| AtlasError::not_found("reader source token is no longer active"))?;
+        validate_position(&update, source.page_count)?;
+        let position = ReadingPosition {
+            page: update.page,
+            page_offset_ratio: update.page_offset_ratio,
+            scale_value: update.scale_value,
+            updated_at: now_ms()?,
+        };
+        self.store
+            .save_position(&source.document_id, &position)
+            .await?;
+        Ok(position)
     }
 }
 
 #[async_trait]
 impl DocumentReaderModule for DefaultDocumentReader {
     async fn open(&self, document_id: DocumentId) -> Result<OpenedReaderDocument, AtlasError> {
+        let _transition = self.transitions.lock().await;
         let opened_at = now_ms()?;
         let source = self
             .store
@@ -111,21 +142,8 @@ impl DocumentReaderModule for DefaultDocumentReader {
         source_token: &ReaderSourceToken,
         update: ReadingPositionUpdate,
     ) -> Result<ReadingPosition, AtlasError> {
-        let source = self
-            .sources
-            .resolve(source_token)?
-            .ok_or_else(|| AtlasError::not_found("reader source token is no longer active"))?;
-        validate_position(&update, source.page_count)?;
-        let position = ReadingPosition {
-            page: update.page,
-            page_offset_ratio: update.page_offset_ratio,
-            scale_value: update.scale_value,
-            updated_at: now_ms()?,
-        };
-        self.store
-            .save_position(&source.document_id, &position)
-            .await?;
-        Ok(position)
+        let _transition = self.transitions.lock().await;
+        self.persist_position(source_token, update).await
     }
 
     async fn close(
@@ -133,16 +151,22 @@ impl DocumentReaderModule for DefaultDocumentReader {
         source_token: &ReaderSourceToken,
         final_position: Option<ReadingPositionUpdate>,
     ) -> Result<(), AtlasError> {
-        if let Some(position) = final_position {
-            self.save_position(source_token, position).await?;
-        }
-        if self.sources.revoke(source_token)? {
-            Ok(())
-        } else {
-            Err(AtlasError::not_found(
+        let _transition = self.transitions.lock().await;
+        let save_result = match final_position {
+            Some(position) => self
+                .persist_position(source_token, position)
+                .await
+                .map(|_| ()),
+            None => Ok(()),
+        };
+        let revoked = self.sources.revoke(source_token)?;
+        save_result?;
+        if !revoked {
+            return Err(AtlasError::not_found(
                 "reader source token is no longer active",
-            ))
+            ));
         }
+        Ok(())
     }
 }
 

@@ -8,11 +8,13 @@ import type {
   ReadingPosition,
   RefreshSourcesResult,
 } from "@atlas/contracts";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 
 import type { AtlasBridge, DispatchReadingCommandInput, PdfDropEvent } from "./atlas-bridge";
+
+const readerProtocol = "atlas-reader";
 
 export const tauriBridge: AtlasBridge = {
   async pickPdfPaths(multiple) {
@@ -80,7 +82,7 @@ export const tauriBridge: AtlasBridge = {
     });
     return {
       ...opened,
-      sourceUrl: `atlas-reader://localhost/pdf/${encodeURIComponent(opened.sourceToken)}`,
+      sourceUrl: convertFileSrc(opened.sourceToken, readerProtocol),
     };
   },
   saveReadingPosition(sourceToken, position) {

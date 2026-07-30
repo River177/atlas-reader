@@ -6,6 +6,7 @@ interface LibraryViewProps {
   error: string | undefined;
   busyDocumentId: string | undefined;
   onImport: () => void;
+  onOpen: (document: DocumentSummary) => void;
   onRelocate: (document: DocumentSummary) => void;
   onRemove: (document: DocumentSummary) => void;
 }
@@ -23,6 +24,7 @@ export function LibraryView({
   error,
   busyDocumentId,
   onImport,
+  onOpen,
   onRelocate,
   onRemove,
 }: LibraryViewProps) {
@@ -75,7 +77,16 @@ export function LibraryView({
               {document.pageCount ? `${document.pageCount} pages` : "Page count pending"} ·{" "}
               {document.fileName}
             </span>
-            <h2>{document.title}</h2>
+            <h2>
+              <button
+                className="paper-title-button"
+                disabled={document.sourceState !== "available"}
+                onClick={() => onOpen(document)}
+                type="button"
+              >
+                {document.title}
+              </button>
+            </h2>
             <p>{document.authors.join(", ") || "Authors pending"}</p>
           </div>
           <div className="paper-actions">
@@ -88,6 +99,14 @@ export function LibraryView({
             >
               {sourceLabels[document.sourceState]}
             </span>
+            <button
+              className="text-action"
+              disabled={busyDocumentId === document.id || document.sourceState !== "available"}
+              onClick={() => onOpen(document)}
+              type="button"
+            >
+              Open
+            </button>
             <button
               className="text-action"
               disabled={busyDocumentId === document.id}

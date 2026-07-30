@@ -47,10 +47,7 @@ export interface AtlasBridge {
     sourceToken: ReaderSourceToken,
     position: ReadingPositionUpdate,
   ): Promise<ReadingPosition>;
-  closeReader(
-    sourceToken: ReaderSourceToken,
-    finalPosition?: ReadingPositionUpdate,
-  ): Promise<void>;
+  closeReader(sourceToken: ReaderSourceToken, finalPosition?: ReadingPositionUpdate): Promise<void>;
   openReadingSession(input: OpenSessionInput): Promise<OpenSessionResult>;
   dispatchReadingCommand(input: DispatchReadingCommandInput): Promise<CommandReceipt>;
   closeReadingSession(sessionId: SessionId): Promise<void>;

@@ -32,7 +32,12 @@ pub fn respond(
         );
     }
 
-    let Some(token) = request.uri().path().strip_prefix("/pdf/") else {
+    let Some(token) = request
+        .uri()
+        .path()
+        .strip_prefix('/')
+        .filter(|token| !token.is_empty() && !token.contains('/'))
+    else {
         return not_found();
     };
     let token = ReaderSourceToken::new(token);
@@ -223,7 +228,7 @@ mod tests {
             })
             .expect("token should issue");
         let request = Request::builder()
-            .uri(format!("atlas-reader://localhost/pdf/{}", token.as_str()))
+            .uri(format!("atlas-reader://localhost/{}", token.as_str()))
             .header(RANGE, "bytes=2-5")
             .body(Vec::new())
             .expect("request should build");
@@ -245,10 +250,22 @@ mod tests {
     fn rejects_unknown_tokens_and_invalid_ranges() {
         let sources = Arc::new(ReaderSourceRegistry::default());
         let unknown = Request::builder()
-            .uri("atlas-reader://localhost/pdf/unknown")
+            .uri("atlas-reader://localhost/unknown")
             .body(Vec::new())
             .expect("request should build");
         assert_eq!(respond(&sources, &unknown).status(), StatusCode::NOT_FOUND);
+
+        let rooted = Request::builder()
+            .uri("atlas-reader://localhost/")
+            .body(Vec::new())
+            .expect("request should build");
+        assert_eq!(respond(&sources, &rooted).status(), StatusCode::NOT_FOUND);
+
+        let nested = Request::builder()
+            .uri("atlas-reader://localhost/pdf/token")
+            .body(Vec::new())
+            .expect("request should build");
+        assert_eq!(respond(&sources, &nested).status(), StatusCode::NOT_FOUND);
 
         assert_eq!(parse_range(Some("bytes=10-1"), 10), Err(()));
         assert_eq!(parse_range(Some("bytes=10-"), 10), Err(()));

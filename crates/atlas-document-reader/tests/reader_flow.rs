@@ -211,6 +211,37 @@ async fn opening_the_same_document_revokes_the_previous_token() {
             .expect("registry should resolve")
             .is_some()
     );
+
+    reader
+        .save_position(
+            &second.source_token,
+            ReadingPositionUpdate {
+                page: 4,
+                page_offset_ratio: 0.5,
+                scale_value: "page-fit".to_owned(),
+            },
+        )
+        .await
+        .expect("active session should save");
+    let stale = reader
+        .save_position(
+            &first.source_token,
+            ReadingPositionUpdate {
+                page: 1,
+                page_offset_ratio: 0.0,
+                scale_value: "page-width".to_owned(),
+            },
+        )
+        .await
+        .expect_err("superseded session must not overwrite the newer position");
+    assert_eq!(stale.code, AtlasErrorCode::NotFound);
+
+    let reopened = reader
+        .open(DocumentId::from("document-1"))
+        .await
+        .expect("reader should reopen");
+    assert_eq!(reopened.position.page, 4);
+    assert_eq!(reopened.position.scale_value, "page-fit");
 }
 
 fn source(path: &std::path::Path, file_state: DocumentFileState) -> ReaderDocumentSource {

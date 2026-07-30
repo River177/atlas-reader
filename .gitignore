@@ -18,11 +18,13 @@ node_modules/
 dist/
 coverage/
 .vite/
+*.tsbuildinfo
 
 # Rust and Tauri
 target/
 **/target/
 src-tauri/gen/
+.cargo/.package-cache
 
 # Local application data
 *.sqlite

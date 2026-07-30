@@ -1,17 +1,17 @@
 # Atlas Reader
 
-Atlas Reader is a planned macOS bilingual academic PDF reader for Chinese
-researchers reading English papers.
+Atlas Reader is a macOS bilingual academic PDF reader for Chinese researchers reading English
+papers.
 
-The product focuses on chapter-based English–Chinese close reading, preserving
-document structure, formulas, citations, and page relationships. Cloud MinerU
-provides document parsing with a user-supplied API key, while translation uses a
-user-configured OpenAI-compatible endpoint.
+The product focuses on chapter-based English–Chinese close reading, preserving document structure,
+formulas, citations, and page relationships. Cloud MinerU provides document parsing with a
+user-supplied API key, while translation uses a user-configured OpenAI-compatible endpoint.
 
 ## Status
 
-Atlas Reader is currently in the product-definition and technical-design phase.
-Application code has not been implemented yet.
+Atlas Reader is in foundation development. The repository contains a runnable Tauri 2 desktop shell,
+a React and TypeScript frontend, Rust domain modules, SQLite migrations, generated TypeScript
+contracts, and foundational tests.
 
 ## MVP direction
 
@@ -27,7 +27,46 @@ Application code has not been implemented yet.
 
 - [Product definition and technical implementation plan](docs/atlas-reader-product-spec.md)
 
+## Architecture
+
+The repository is a Cargo and pnpm workspace:
+
+```text
+apps/desktop              Tauri shell and React frontend
+crates/atlas-domain       Framework-independent domain and IPC types
+crates/atlas-library      Deep local-library module
+crates/atlas-reading-session
+                          ReadingSession interface and implementation
+crates/atlas-storage      SQLite migrations and storage adapters
+crates/atlas-adapters     External-provider adapters
+crates/atlas-contracts    Rust contract facade
+packages/contracts        Generated TypeScript contracts
+```
+
+Dependencies point inward toward `atlas-domain`. React talks to Rust through the Tauri bridge, and
+callers never orchestrate parsing, translation, retries, or caching directly.
+
+## Development
+
+Requirements:
+
+- Node.js 24.15
+- pnpm 10.33
+- Rust 1.97
+- Xcode command-line tools
+
+```bash
+pnpm install
+pnpm contracts:generate
+pnpm validate
+pnpm tauri:dev
+```
+
+`pnpm validate` runs formatting, linting, type checks, frontend tests, frontend builds, Clippy, and
+Rust tests. Cloud MinerU live tests are not part of the default suite and require an explicitly
+supplied test key.
+
 ## License
 
-No open-source license has been selected yet. Public repository visibility does
-not grant permission to copy, modify, or redistribute the contents.
+No open-source license has been selected yet. Public repository visibility does not grant permission
+to copy, modify, or redistribute the contents.

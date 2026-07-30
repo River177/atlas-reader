@@ -1,0 +1,4 @@
+apps/desktop/src-tauri/gen/
+docs/atlas-reader-product-spec.md
+packages/contracts/src/generated/
+target/

@@ -1,0 +1,15 @@
+[package]
+name = "atlas-reading-session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+atlas-domain = { path = "../atlas-domain" }
+tokio.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

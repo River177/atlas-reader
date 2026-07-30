@@ -1,0 +1,16 @@
+[package]
+name = "atlas-library"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+atlas-domain = { path = "../atlas-domain" }
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

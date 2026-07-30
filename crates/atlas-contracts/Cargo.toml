@@ -1,0 +1,12 @@
+[package]
+name = "atlas-contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+atlas-domain = { path = "../atlas-domain" }
+
+[lints]
+workspace = true

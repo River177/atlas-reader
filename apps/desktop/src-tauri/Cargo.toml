@@ -1,0 +1,26 @@
+[package]
+name = "atlas-desktop"
+version.workspace = true
+description = "Atlas Reader desktop application"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "atlas_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+atlas-adapters = { path = "../../../crates/atlas-adapters" }
+atlas-contracts = { path = "../../../crates/atlas-contracts" }
+atlas-library = { path = "../../../crates/atlas-library" }
+atlas-reading-session = { path = "../../../crates/atlas-reading-session" }
+atlas-storage = { path = "../../../crates/atlas-storage" }
+serde.workspace = true
+tauri = { version = "2", features = [] }
+
+[lints]
+workspace = true

@@ -1378,12 +1378,45 @@ interface CanonicalAsset {
 
 MVP 不安装或管理 Local MinerU。
 
-### 18.2 上传
+### 18.2 接口与鉴权
+
+以下内容于 2026-07-30 对 `https://mineru.net` 实测确认，不是推测。
+
+Base URL 为 `https://mineru.net/api/v4`，鉴权为 `Authorization: Bearer <token>`。
+Token 在 MinerU「API 管理」页面自建，形如 `sk-` 前缀的不透明字符串，不是 JWT。
+
+| 步骤 | 方法与路径 | 说明 |
+|---|---|---|
+| 申请上传链接 | `POST /file-urls/batch` | 单次最多 50 个文件，返回 `batch_id` 与等长的 `file_urls` |
+| 上传 | `PUT <file_url>` | 直传阿里云 OSS 预签名地址，链接有效期 24 小时 |
+| 批量查询 | `GET /extract-results/batch/{batch_id}` | 返回 `extract_result` 数组，与提交顺序无关，按 `data_id` 对齐 |
+| 单任务查询 | `GET /extract/task/{task_id}` | 仅用于 URL 提交模式 |
+
+上传完成后**不需要**再调用提交接口，服务端自动扫描并建任务。
+
+服务端限制：单文件 200 MB、200 页；每账号每天 1000 页享最高优先级。
+服务端下载境外 URL（GitHub、AWS 等）会超时，因此 Atlas 只使用本地上传模式，
+不使用 URL 提交模式。
+
+响应信封分两种，Atlas 必须都能识别：
+
+- 业务响应：`{"code": <number>, "msg": ..., "trace_id": ..., "data": ...}`，
+  `code == 0` 为成功。鉴权有效但任务不存在时返回 `HTTP 200` 与
+  `{"code":-60012,"msg":"task not found or expire"}`，既没有 `trace_id` 也没有 `data`。
+- 网关响应：`{"traceId": ..., "msgCode": "A0202", "msg": "user authenticate failed",
+  "data": null, "success": false, "total": 0}`，字段为驼峰，鉴权失败时伴随 `HTTP 401`。
+- 完全不带 `Authorization` 头时返回 `HTTP 401` 与纯文本 `login required`，不是 JSON。
+
+### 18.3 上传
 
 - MinerU Base URL 在保存设置时去除 Query、Fragment 和末尾多余斜杠，并规范化 Scheme、IDNA Host、显式 Port 与 Base Path。
 - `endpoint_fingerprint` 计算为 `SHA-256(provider_kind + normalized_base_url + adapter_protocol_version)`，不包含 API Key。
 - Parse Operation 创建时固化 Provider Profile、Base URL 与 Fingerprint。
 - Base URL、Base Path 或 Adapter Protocol Version 变化只影响新任务，不重定向运行中的任务。
+- 申请链接时为每个文件传入 `data_id`，取值为文档的内容 SHA-256，用于结果对齐。
+- **`PUT` 上传必须不携带 `Content-Type` 头**。OSS 预签名的签名按空 `Content-Type`
+  计算，任何值都会导致 `HTTP 403 SignatureDoesNotMatch`。`reqwest` 使用
+  `RequestBuilder::body` 时默认不设该头，实现中不得改用 `json`、`form` 或手工设置。
 - 使用 `reqwest::Body` 从文件流式上传，不将完整 PDF 读入内存。
 - 上传前再次校验文件大小、修改时间和 SHA-256。
 - 文件变化时取消未提交任务、废弃旧缓存并要求重新导入。
@@ -1391,44 +1424,128 @@ MVP 不安装或管理 Local MinerU。
 - 连接超时 15 秒，单次上传总超时 180 秒。
 - 上传进度按已发送字节计算，最高每秒上报 4 次。
 
-### 18.3 幂等与状态未知
+### 18.4 幂等与状态未知
 
-如果 MinerU Endpoint 支持客户端幂等键：
+MinerU 不提供客户端幂等键，但提供两个足以避免重复上传的句柄：
 
-1. 在 SQLite 写入远端调用 Intent。
-2. 生成稳定的 `operation_id` 和随机 `idempotency_key`。
-3. 使用同一键重试同一上传操作。
-4. 收到远端 Job ID 后立即写入事务。
+- `batch_id` 在**上传发生之前**由 `POST /file-urls/batch` 返回。
+- `data_id` 由 Atlas 指定并在每次查询结果中原样回传。
 
-如果 Endpoint 不支持幂等键或按客户端键查询：
+因此顺序固定为：
 
-- 网络在收到响应前中断时，任务进入 `status_unknown`。
-- Atlas 不自动重复上传。
-- UI 显示可能已产生远端任务，并允许用户“查询远端任务”或“重新上传”。
-- “重新上传”是重复费用保护操作，不是内容隐私授权。
+1. 在 SQLite 写入远端调用 Intent，生成稳定的 `operation_id`。
+2. 调用 `POST /file-urls/batch`，在同一事务中持久化 `batch_id`、`data_id` 与上传地址。
+3. 再执行 `PUT` 上传。
+4. 上传响应丢失时不重新申请 `batch_id`，而是用已持久化的 `batch_id` 查询。
 
-因此产品不承诺第三方接口无法保证的 exactly-once 上传。
+由于 `batch_id` 先于上传落库，网络在上传响应前中断不会产生孤儿任务：
 
-### 18.4 轮询
+- 查询显示已有结果或正在解析，则直接接管，不重复上传。
+- 查询显示无该文件，则可以安全重传到同一预签名地址（24 小时内有效）。
+- 预签名地址过期且状态仍不明时任务进入 `status_unknown`，Atlas 不自动重复上传，
+  UI 允许用户「查询远端任务」或「重新上传」。
+
+「重新上传」是重复费用保护操作，不是内容隐私授权。
+
+### 18.5 轮询
+
+实测状态机为 `pending` → `running` → `done`，失败时进入 `failed`。
+`running` 期间 `extract_progress` 提供 `extracted_pages`、`total_pages` 与 `start_time`。
+`done` 时提供 `full_zip_url`，`failed` 时提供 `err_msg`。
 
 - 初始间隔 2 秒。
 - 30 秒后增加到 5 秒。
 - 2 分钟后增加到 10 秒。
 - 单次轮询超时 15 秒。
 - 总等待 10 分钟后停止自动轮询并显示可恢复状态。
-- 应用重启后使用已保存 Remote Job ID 继续轮询。
+- 应用重启后使用已保存 `batch_id` 继续轮询。
+- 一次查询覆盖整个批次，因此并发导入不放大轮询请求数。
 
-### 18.5 下载与解包
+### 18.6 下载与解包
+
+`full_zip_url` 指向 `cdn-mineru.openxlab.org.cn`，无需鉴权。实测压缩包清单：
+
+| 条目 | 用途 |
+|---|---|
+| `{uuid}_content_list.json` | **规范化的唯一来源**，扁平块数组 |
+| `{uuid}_content_list_v2.json` | 按页分组的段落树，MVP 不使用 |
+| `layout.json` | 含 `pdf_info[].page_size`，提供每页 PDF 点尺寸 |
+| `{uuid}_model.json` | 模型原始输出，MVP 不使用 |
+| `full.md` | 整篇 Markdown，仅用于诊断 |
+| `images/<sha256>.jpg` | 图片、表格与图表位图，文件名即内容哈希 |
+| `{uuid}_origin.pdf` | 原 PDF 回传，Atlas 解包时直接丢弃 |
 
 - 下载到应用临时目录中的随机文件名。
 - 下载大小默认上限为原 PDF 大小的 10 倍，绝对上限 1 GB。
 - 压缩包展开大小、文件数和单文件大小分别受限。
 - 拒绝绝对路径、`..`、符号链接和硬链接。
+- 只保留上表中标注为使用的条目，`_origin.pdf` 与未知条目一律不落盘。
 - 校验 JSON Schema 与资源 MIME。
 - 成功后原子移动到 Parse Artifact 目录。
 - 失败时保留最小诊断元数据，不保留损坏资源。
 
-### 18.6 本地低保真提取
+### 18.7 结果映射到 Canonical Schema
+
+`content_list.json` 是扁平数组，每个元素至少含 `type`、`bbox` 与 `page_idx`。
+
+实测出现的 `type` 取值及处理方式：
+
+| type | 处理 |
+|---|---|
+| `text` | 正文块；含 `text_level` 时为标题 |
+| `equation` | `text_format` 为 `latex`，`text` 形如 `$$...$$` 并可能带 `\tag{n}` |
+| `table` | `table_body` 为 HTML `<table>`，另有 `table_caption`、`table_footnote` 与 `img_path` 位图 |
+| `image` | `img_path` 加 `image_caption`、`image_footnote` |
+| `chart` | 同 `image`，附 `chart_caption`、`chart_footnote` |
+| `ref_text` | 参考文献条目，归入独立章节，不参与正文预取 |
+| `page_footnote` | 脚注，绑定到所在页而非段落 |
+| `page_number`、`footer`、`aside_text` | 版面噪声，规范化时丢弃 |
+
+章节切分规则：
+
+- 仅 `text_level` 存在的块作为标题候选。
+- 实测 MinerU 将 `3.2.1` 一类三级标题同样标为 `text_level: 2`，因此层级不能只依赖
+  `text_level`，需再解析标题文本的数字前缀确定嵌套深度。
+- 首个 `text_level: 1` 作为文档标题，不单独成章。
+
+坐标系换算：
+
+- `content_list.json` 的 `bbox` 为 `[x0, y0, x1, y1]`，**按页归一化到 1000 × 1000**。
+- `layout.json` 的 `pdf_info[i].page_size` 为该页真实 PDF 点尺寸（实测 `[612, 792]`）。
+- 叠加回 PDF.js 时使用 `x_pt = bbox_x / 1000 × page_width_pt`，纵向同理。
+- 归一化系数在 x 与 y 上互相独立，不得假设等比缩放。
+
+图片资源：
+
+- `img_path` 文件名即内容 SHA-256，可直接作为内容寻址存储的键，无需重新计算。
+
+### 18.8 实测基准
+
+2026-07-30，`model_version` 为 `vlm`，`enable_formula` 与 `enable_table` 均开启。
+
+单篇（15 页 / 2.2 MB，本地上传模式）：
+
+| 阶段 | 耗时 |
+|---|---|
+| 申请上传链接 | 0.6 s |
+| 上传 | 2.4 s |
+| 解析（pending → done） | 22.0 s |
+| 端到端 | 25.0 s |
+
+批量（10 篇 arXiv 论文，一次 `file-urls/batch` 提交）：
+
+| 指标 | 值 |
+|---|---|
+| 样本量 | 10 |
+| 最快 | 20.4 s |
+| P75 | 25.8 s |
+| 最慢 | 68.8 s（75 页 / 6.8 MB） |
+| 120 秒内完成 | 10 / 10 |
+
+结论：满足 §31.1 Phase 0 的退出条件，也满足 §32 中 TFRBC P75 小于 180 秒的验收标准，
+解析本身不是 TFRBC 的瓶颈，翻译才是。服务端对同一批次并行处理，批量导入不会线性放大等待。
+
+### 18.9 本地低保真提取
 
 - 使用 Rust `pdf-extract` 读取数字文本层。
 - 按页提取并通过标题启发式划分章节。
@@ -2603,6 +2720,8 @@ OpenAI-compatible：
 ### 29.7 AI 自主开发的 Live MinerU 边界
 
 - 项目所有者通过本机 Keychain 或 CI Secret 提供开发/测试 API Key。
+- 开发 Key 存放于 macOS Keychain，Service 为 `com.atlasreader.providers`，
+  Account 为 `atlas.mineru`，与应用运行时读取的位置一致，无需另设开发专用通道。
 - 正式产品不复用开发 Key；每位用户配置自己的 Cloud MinerU Key。
 - Key 不写入仓库、配置文件、Fixture、Prompt、日志、诊断包或测试快照。
 - 默认测试使用 `ScriptedCloudParserAdapter` 和 WireMock，不产生真实费用。
@@ -2612,6 +2731,7 @@ OpenAI-compatible：
 - 每个 Pull Request 不运行 Live 测试；只在 Adapter 变更、发布候选和定时兼容性检查时运行。
 - 测试 Key 应使用独立账户、最低必要权限、速率限制和费用上限，并支持随时轮换。
 - 任何失败输出在持久化前删除鉴权 Header、请求 URL Query 和提供方返回的敏感诊断字段。
+- 每天 1000 页的高优先级额度由 Live 测试与人工使用共享，Live 测试预算不超过 200 页。
 
 ---
 
@@ -2675,6 +2795,14 @@ OpenAI-compatible：
 - 至少 15/20 篇论文在 120 秒内返回可规范化结果。
 - 模型可以稳定逐块返回结构化译文。
 - 无法满足时先调整 TFRBC 或解析策略，不进入全面开发。
+
+进展（2026-07-30）：
+
+- Tauri 2 + PDF.js arm64 原型、Keychain 读写：已在 Phase 1 中交付。
+- Cloud MinerU Spike：**已完成**，协议、鉴权、限制与结果格式记录于 §18.2 至 §18.7。
+- 延迟样本：**已完成且超出门槛**，10/10 篇在 120 秒内完成，P75 为 25.8 秒，详见 §18.8。
+- OpenAI-compatible 流式 Spike：**未完成**，仍是 Phase 3 之前唯一的未验证风险。
+- 签名与 Notarization 空壳：**未完成**，推迟到 Phase 5。
 
 ### 31.2 Phase 1：本地基础，2 周
 

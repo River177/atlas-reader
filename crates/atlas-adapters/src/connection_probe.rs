@@ -210,31 +210,49 @@ fn classify_response(kind: ProviderKind, status: StatusCode, body: &str) -> Conn
     }
 }
 
-/// Every MinerU answer — success or failure — carries a `code` alongside a `msg`
-/// or a `trace_id`. Requiring the pair keeps an unrelated service that happens to
-/// return `{"code": ...}` from being reported as a working Cloud MinerU.
+/// Verified against the live Cloud MinerU v4 API on 2026-07-30.
+///
+/// A key that authenticates but names a task that does not exist answers
+/// `HTTP 200` with `{"code":-60012,"msg":"task not found or expire"}` — no
+/// `trace_id` and no `data`. A successful call adds both. The shared OpenXLab
+/// gateway wraps its own failures differently, using `msgCode` and `traceId`
+/// instead of `code` and `trace_id`, so both spellings count as an envelope.
+///
+/// Requiring a code field *and* a companion field keeps an unrelated service
+/// that happens to return `{"code": ...}` from being reported as Cloud MinerU.
 fn mineru_envelope(payload: &Value) -> bool {
     let Some(object) = payload.as_object() else {
         return false;
     };
-    object.contains_key("code")
-        && (object.contains_key("msg")
-            || object.contains_key("trace_id")
-            || object.contains_key("data"))
+    let has_code = object.contains_key("code") || object.contains_key("msgCode");
+    let has_companion = object.contains_key("msg")
+        || object.contains_key("trace_id")
+        || object.contains_key("traceId")
+        || object.contains_key("data");
+    has_code && has_companion
 }
 
 /// MinerU authorization failures use the `A02xx` code family.
+///
+/// The live gateway returns them as `msgCode` next to `msg: "user authenticate
+/// failed"`, and pairs them with `HTTP 401`, which `classify_response` already
+/// short-circuits. This function is the backstop for the same envelope arriving
+/// with a `2xx` status, which the gateway does for some routes.
 fn mineru_rejected_the_key(payload: &Value) -> bool {
-    let code_matches = payload
-        .get("code")
-        .and_then(Value::as_str)
-        .is_some_and(|code| code.starts_with("A02"));
+    let code_matches = ["code", "msgCode"].iter().any(|field| {
+        payload
+            .get(*field)
+            .and_then(Value::as_str)
+            .is_some_and(|code| code.starts_with("A02"))
+    });
     let message_matches = payload
         .get("msg")
         .and_then(Value::as_str)
         .is_some_and(|message| {
             let lowered = message.to_ascii_lowercase();
-            lowered.contains("token") || lowered.contains("unauthorized")
+            lowered.contains("token")
+                || lowered.contains("unauthorized")
+                || lowered.contains("authenticate")
         });
     code_matches || message_matches
 }
@@ -383,6 +401,48 @@ mod tests {
 
         assert!(result.ok);
         assert_eq!(result.code, ConnectionTestCode::Ok);
+    }
+
+    #[test]
+    fn live_cloud_mineru_responses_are_classified_correctly() {
+        // Every payload below was captured from https://mineru.net on 2026-07-30
+        // by probing /api/v4/extract/task/{unknown-uuid}.
+
+        // A key that authenticates, naming a task that does not exist. Note the
+        // absence of both `trace_id` and `data`, and that the code is a number.
+        let accepted = classify_response(
+            ProviderKind::Mineru,
+            StatusCode::OK,
+            r#"{"code":-60012,"msg":"task not found or expire"}"#,
+        );
+        assert!(accepted.ok, "a live authenticated probe must pass");
+        assert_eq!(accepted.code, ConnectionTestCode::Ok);
+
+        // A key the gateway rejects. The envelope is camel case here, and the
+        // code lives under `msgCode` rather than `code`.
+        let rejected = classify_response(
+            ProviderKind::Mineru,
+            StatusCode::UNAUTHORIZED,
+            r#"{"traceId":"69610f323359","msgCode":"A0202","msg":"user authenticate failed","data":null,"success":false,"total":0}"#,
+        );
+        assert_eq!(rejected.code, ConnectionTestCode::Unauthorized);
+
+        // The same gateway envelope reaching us with a success status must not
+        // be mistaken for a working endpoint.
+        let masked = classify_response(
+            ProviderKind::Mineru,
+            StatusCode::OK,
+            r#"{"traceId":"69610f323359","msgCode":"A0202","msg":"user authenticate failed","data":null,"success":false,"total":0}"#,
+        );
+        assert_eq!(masked.code, ConnectionTestCode::Unauthorized);
+
+        // Omitting the header entirely returns plain text, not JSON.
+        let anonymous = classify_response(
+            ProviderKind::Mineru,
+            StatusCode::UNAUTHORIZED,
+            "login required",
+        );
+        assert_eq!(anonymous.code, ConnectionTestCode::Unauthorized);
     }
 
     #[test]

@@ -11,7 +11,9 @@ user-supplied API key, while translation uses a user-configured OpenAI-compatibl
 
 Atlas Reader is in foundation development. The repository contains a runnable Tauri 2 desktop shell,
 a React and TypeScript frontend, Rust domain modules, SQLite migrations, generated TypeScript
-contracts, and foundational tests.
+contracts, and foundational tests. The first vertical slice is complete: users can import PDFs from
+the native picker or drag and drop, search the local library, detect duplicates, refresh source
+status, relocate moved files, and remove records without deleting the original PDF.
 
 ## MVP direction
 

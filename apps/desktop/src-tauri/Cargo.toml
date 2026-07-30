@@ -21,6 +21,7 @@ atlas-reading-session = { path = "../../../crates/atlas-reading-session" }
 atlas-storage = { path = "../../../crates/atlas-storage" }
 serde.workspace = true
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2.7.2"
 
 [lints]
 workspace = true

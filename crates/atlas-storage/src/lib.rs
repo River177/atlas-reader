@@ -1,8 +1,11 @@
 use std::{path::Path, str::FromStr};
 
 use async_trait::async_trait;
-use atlas_domain::{AtlasError, DocumentId, DocumentSummary, LibrarySort};
-use atlas_library::{DocumentListRequest, DocumentStore};
+use atlas_domain::{AtlasError, DocumentFileState, DocumentId, DocumentSummary, LibrarySort};
+use atlas_library::{
+    DocumentImport, DocumentListRequest, DocumentRecord, DocumentSourceUpdate, DocumentStore,
+    StoredImport,
+};
 use sqlx::{
     Row, SqlitePool,
     migrate::Migrator,
@@ -80,7 +83,8 @@ impl DocumentStore for SqliteDocumentStore {
         let rows = match request.sort {
             LibrarySort::Recent => {
                 sqlx::query(
-                    "SELECT id, title, authors_json, page_count, file_state, last_opened_at
+                    "SELECT id, sha256, title, authors_json, page_count, file_path,
+                            file_size_bytes, file_mtime_ms, file_state, last_opened_at
                      FROM documents
                      WHERE (
                        ?1 IS NULL
@@ -98,7 +102,8 @@ impl DocumentStore for SqliteDocumentStore {
             }
             LibrarySort::Title => {
                 sqlx::query(
-                    "SELECT id, title, authors_json, page_count, file_state, last_opened_at
+                    "SELECT id, sha256, title, authors_json, page_count, file_path,
+                            file_size_bytes, file_mtime_ms, file_state, last_opened_at
                      FROM documents
                      WHERE (
                        ?1 IS NULL
@@ -118,34 +123,214 @@ impl DocumentStore for SqliteDocumentStore {
         .map_err(map_sqlx)?;
 
         rows.into_iter()
-            .map(|row| {
-                let authors_json: String = row.try_get("authors_json").map_err(map_sqlx)?;
-                let authors = serde_json::from_str(&authors_json)
-                    .map_err(|error| AtlasError::storage(error.to_string()))?;
-                let page_count = row
-                    .try_get::<Option<i64>, _>("page_count")
-                    .map_err(map_sqlx)?
-                    .map(|value| {
-                        u32::try_from(value)
-                            .map_err(|_| AtlasError::storage("page count is outside u32 range"))
-                    })
-                    .transpose()?;
-                let last_opened_at =
-                    u64::try_from(row.try_get::<i64, _>("last_opened_at").map_err(map_sqlx)?)
-                        .map_err(|_| AtlasError::storage("last_opened_at cannot be negative"))?;
-                let file_state: String = row.try_get("file_state").map_err(map_sqlx)?;
-
-                Ok(DocumentSummary {
-                    id: DocumentId::new(row.try_get::<String, _>("id").map_err(map_sqlx)?),
-                    title: row.try_get("title").map_err(map_sqlx)?,
-                    authors,
-                    page_count,
-                    source_available: file_state == "available",
-                    last_opened_at,
-                })
-            })
+            .map(row_to_record)
+            .map(|record| record.map(|value| value.summary()))
             .collect()
     }
+
+    async fn import(&self, input: &DocumentImport) -> Result<StoredImport, AtlasError> {
+        let mut transaction = self.pool.begin().await.map_err(map_sqlx)?;
+        let duplicate =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM documents WHERE sha256 = ?1")
+                .bind(&input.sha256)
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(map_sqlx)?
+                > 0;
+        let authors_json = serde_json::to_string(&input.authors)
+            .map_err(|error| AtlasError::storage(error.to_string()))?;
+
+        sqlx::query(
+            "INSERT INTO documents (
+               id, sha256, title, authors_json, page_count, file_path,
+               file_size_bytes, file_mtime_ms, file_state, created_at,
+               updated_at, last_opened_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'available', ?9, ?9, ?9)
+             ON CONFLICT(sha256) DO UPDATE SET
+               title = excluded.title,
+               authors_json = excluded.authors_json,
+               page_count = excluded.page_count,
+               file_path = excluded.file_path,
+               file_size_bytes = excluded.file_size_bytes,
+               file_mtime_ms = excluded.file_mtime_ms,
+               file_state = 'available',
+               updated_at = excluded.updated_at,
+               last_opened_at = excluded.last_opened_at",
+        )
+        .bind(input.id.as_str())
+        .bind(&input.sha256)
+        .bind(&input.title)
+        .bind(authors_json)
+        .bind(i64::from(input.page_count))
+        .bind(&input.file_path)
+        .bind(to_i64(input.file_size_bytes, "file size")?)
+        .bind(to_i64(input.file_mtime_ms, "file modification time")?)
+        .bind(to_i64(input.imported_at, "import time")?)
+        .execute(&mut *transaction)
+        .await
+        .map_err(map_sqlx)?;
+        let row = select_record_by_sha256(&mut transaction, &input.sha256)
+            .await?
+            .ok_or_else(|| AtlasError::storage("imported document was not persisted"))?;
+        transaction.commit().await.map_err(map_sqlx)?;
+
+        Ok(StoredImport {
+            document: row,
+            duplicate,
+        })
+    }
+
+    async fn get(&self, document_id: &DocumentId) -> Result<Option<DocumentRecord>, AtlasError> {
+        let row = sqlx::query(
+            "SELECT id, sha256, title, authors_json, page_count, file_path,
+                    file_size_bytes, file_mtime_ms, file_state, last_opened_at
+             FROM documents
+             WHERE id = ?1",
+        )
+        .bind(document_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        row.map(row_to_record).transpose()
+    }
+
+    async fn list_sources(&self) -> Result<Vec<DocumentRecord>, AtlasError> {
+        sqlx::query(
+            "SELECT id, sha256, title, authors_json, page_count, file_path,
+                    file_size_bytes, file_mtime_ms, file_state, last_opened_at
+             FROM documents
+             ORDER BY id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_sqlx)?
+        .into_iter()
+        .map(row_to_record)
+        .collect()
+    }
+
+    async fn update_source(
+        &self,
+        document_id: &DocumentId,
+        update: &DocumentSourceUpdate,
+        updated_at: u64,
+    ) -> Result<DocumentRecord, AtlasError> {
+        let result = sqlx::query(
+            "UPDATE documents
+             SET file_path = ?2,
+                 file_size_bytes = ?3,
+                 file_mtime_ms = ?4,
+                 file_state = ?5,
+                 updated_at = ?6
+             WHERE id = ?1",
+        )
+        .bind(document_id.as_str())
+        .bind(&update.file_path)
+        .bind(to_i64(update.file_size_bytes, "file size")?)
+        .bind(to_i64(update.file_mtime_ms, "file modification time")?)
+        .bind(file_state_value(update.file_state))
+        .bind(to_i64(updated_at, "update time")?)
+        .execute(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        if result.rows_affected() == 0 {
+            return Err(AtlasError::not_found("document was not found"));
+        }
+        self.get(document_id)
+            .await?
+            .ok_or_else(|| AtlasError::storage("updated document could not be loaded"))
+    }
+
+    async fn remove(&self, document_id: &DocumentId) -> Result<bool, AtlasError> {
+        let result = sqlx::query("DELETE FROM documents WHERE id = ?1")
+            .bind(document_id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
+        Ok(result.rows_affected() > 0)
+    }
+}
+
+async fn select_record_by_sha256(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sha256: &str,
+) -> Result<Option<DocumentRecord>, AtlasError> {
+    let row = sqlx::query(
+        "SELECT id, sha256, title, authors_json, page_count, file_path,
+                file_size_bytes, file_mtime_ms, file_state, last_opened_at
+         FROM documents
+         WHERE sha256 = ?1",
+    )
+    .bind(sha256)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(map_sqlx)?;
+    row.map(row_to_record).transpose()
+}
+
+fn row_to_record(row: sqlx::sqlite::SqliteRow) -> Result<DocumentRecord, AtlasError> {
+    let authors_json: String = row.try_get("authors_json").map_err(map_sqlx)?;
+    let authors = serde_json::from_str(&authors_json)
+        .map_err(|error| AtlasError::storage(error.to_string()))?;
+    let page_count = row
+        .try_get::<Option<i64>, _>("page_count")
+        .map_err(map_sqlx)?
+        .map(|value| {
+            u32::try_from(value).map_err(|_| AtlasError::storage("page count is outside u32 range"))
+        })
+        .transpose()?;
+    let file_state: String = row.try_get("file_state").map_err(map_sqlx)?;
+
+    Ok(DocumentRecord {
+        id: DocumentId::new(row.try_get::<String, _>("id").map_err(map_sqlx)?),
+        sha256: row.try_get("sha256").map_err(map_sqlx)?,
+        title: row.try_get("title").map_err(map_sqlx)?,
+        authors,
+        page_count,
+        file_path: row.try_get("file_path").map_err(map_sqlx)?,
+        file_size_bytes: to_u64(
+            row.try_get::<i64, _>("file_size_bytes").map_err(map_sqlx)?,
+            "file size",
+        )?,
+        file_mtime_ms: to_u64(
+            row.try_get::<i64, _>("file_mtime_ms").map_err(map_sqlx)?,
+            "file modification time",
+        )?,
+        file_state: parse_file_state(&file_state)?,
+        last_opened_at: to_u64(
+            row.try_get::<i64, _>("last_opened_at").map_err(map_sqlx)?,
+            "last opened time",
+        )?,
+    })
+}
+
+fn parse_file_state(value: &str) -> Result<DocumentFileState, AtlasError> {
+    match value {
+        "available" => Ok(DocumentFileState::Available),
+        "missing" => Ok(DocumentFileState::Missing),
+        "changed" => Ok(DocumentFileState::Changed),
+        "unreadable" => Ok(DocumentFileState::Unreadable),
+        _ => Err(AtlasError::storage(format!(
+            "unknown document file state: {value}"
+        ))),
+    }
+}
+
+fn file_state_value(value: DocumentFileState) -> &'static str {
+    match value {
+        DocumentFileState::Available => "available",
+        DocumentFileState::Missing => "missing",
+        DocumentFileState::Changed => "changed",
+        DocumentFileState::Unreadable => "unreadable",
+    }
+}
+
+fn to_i64(value: u64, field: &str) -> Result<i64, AtlasError> {
+    i64::try_from(value).map_err(|_| AtlasError::storage(format!("{field} is outside i64 range")))
+}
+
+fn to_u64(value: i64, field: &str) -> Result<u64, AtlasError> {
+    u64::try_from(value).map_err(|_| AtlasError::storage(format!("{field} cannot be negative")))
 }
 
 fn map_sqlx(error: sqlx::Error) -> AtlasError {
@@ -201,6 +386,43 @@ mod tests {
 
         assert_eq!(documents.len(), 1);
         assert_eq!(documents[0].title, "A Maintainable Reader");
-        assert!(documents[0].source_available);
+        assert_eq!(documents[0].source_state, DocumentFileState::Available);
+    }
+
+    #[tokio::test]
+    async fn import_is_atomic_and_duplicate_updates_the_existing_record() {
+        let database = AtlasDatabase::open_in_memory()
+            .await
+            .expect("database should open");
+        let store = SqliteDocumentStore::new(&database);
+        let first = DocumentImport {
+            id: DocumentId::from("document-1"),
+            sha256: "same-content".to_owned(),
+            title: "First title".to_owned(),
+            authors: vec!["Ada".to_owned()],
+            page_count: 10,
+            file_path: "/tmp/first.pdf".to_owned(),
+            file_size_bytes: 100,
+            file_mtime_ms: 1,
+            imported_at: 1,
+        };
+        let second = DocumentImport {
+            id: DocumentId::from("document-2"),
+            title: "Updated title".to_owned(),
+            file_path: "/tmp/second.pdf".to_owned(),
+            imported_at: 2,
+            ..first.clone()
+        };
+
+        let inserted = store.import(&first).await.expect("first import");
+        let duplicate = store.import(&second).await.expect("duplicate import");
+        let sources = store.list_sources().await.expect("sources should load");
+
+        assert!(!inserted.duplicate);
+        assert!(duplicate.duplicate);
+        assert_eq!(duplicate.document.id, DocumentId::from("document-1"));
+        assert_eq!(duplicate.document.title, "Updated title");
+        assert_eq!(duplicate.document.file_path, "/tmp/second.pdf");
+        assert_eq!(sources.len(), 1);
     }
 }

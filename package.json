@@ -6,7 +6,7 @@
   "packageManager": "pnpm@10.33.2",
   "scripts": {
     "build": "pnpm --filter @atlas/desktop build",
-    "contracts:check": "pnpm contracts:generate && git diff --exit-code -- packages/contracts/src/generated",
+    "contracts:check": "bash scripts/check-contracts.sh",
     "contracts:generate": "$HOME/.cargo/bin/cargo test -p atlas-domain export_bindings",
     "dev": "pnpm --filter @atlas/desktop dev",
     "format": "prettier --write . && $HOME/.cargo/bin/cargo fmt --all",

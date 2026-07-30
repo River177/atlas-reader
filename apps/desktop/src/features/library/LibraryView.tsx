@@ -4,9 +4,28 @@ interface LibraryViewProps {
   documents: DocumentSummary[];
   loading: boolean;
   error: string | undefined;
+  busyDocumentId: string | undefined;
+  onImport: () => void;
+  onRelocate: (document: DocumentSummary) => void;
+  onRemove: (document: DocumentSummary) => void;
 }
 
-export function LibraryView({ documents, loading, error }: LibraryViewProps) {
+const sourceLabels = {
+  available: "Local source",
+  missing: "Source missing",
+  changed: "Source changed",
+  unreadable: "Source unreadable",
+} as const;
+
+export function LibraryView({
+  documents,
+  loading,
+  error,
+  busyDocumentId,
+  onImport,
+  onRelocate,
+  onRemove,
+}: LibraryViewProps) {
   if (loading) {
     return (
       <div className="library-state" role="status">
@@ -36,9 +55,13 @@ export function LibraryView({ documents, loading, error }: LibraryViewProps) {
         <span className="state-kicker">Foundation ready</span>
         <h2>Your research library is empty</h2>
         <p>
-          The local database, ReadingSession interface, and desktop bridge are connected. PDF import
-          is the next vertical slice.
+          Import a public paper to add it to your local library. Atlas validates the PDF, extracts
+          basic metadata, and detects duplicates before saving the record.
         </p>
+        <button className="primary-action empty-action" onClick={onImport} type="button">
+          Choose PDF files
+        </button>
+        <span className="drop-hint">or drop PDFs anywhere in this window</span>
       </div>
     );
   }
@@ -49,18 +72,39 @@ export function LibraryView({ documents, loading, error }: LibraryViewProps) {
         <article className="paper-row" key={document.id}>
           <div>
             <span className="paper-meta">
-              {document.pageCount ? `${document.pageCount} pages` : "Page count pending"}
+              {document.pageCount ? `${document.pageCount} pages` : "Page count pending"} ·{" "}
+              {document.fileName}
             </span>
             <h2>{document.title}</h2>
             <p>{document.authors.join(", ") || "Authors pending"}</p>
           </div>
-          <span
-            className={
-              document.sourceAvailable ? "file-status" : "file-status file-status--missing"
-            }
-          >
-            {document.sourceAvailable ? "Local source" : "Source missing"}
-          </span>
+          <div className="paper-actions">
+            <span
+              className={
+                document.sourceState === "available"
+                  ? "file-status"
+                  : "file-status file-status--missing"
+              }
+            >
+              {sourceLabels[document.sourceState]}
+            </span>
+            <button
+              className="text-action"
+              disabled={busyDocumentId === document.id}
+              onClick={() => onRelocate(document)}
+              type="button"
+            >
+              Locate
+            </button>
+            <button
+              className="text-action text-action--danger"
+              disabled={busyDocumentId === document.id}
+              onClick={() => onRemove(document)}
+              type="button"
+            >
+              Remove
+            </button>
+          </div>
         </article>
       ))}
     </div>

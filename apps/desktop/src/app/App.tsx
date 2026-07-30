@@ -1,43 +1,13 @@
-import { useEffect, useState } from "react";
-import type { DocumentSummary } from "@atlas/contracts";
-
 import { atlasBridge, type AtlasBridge } from "../bridge";
 import { LibraryView } from "../features/library/LibraryView";
+import { useLibrary } from "../features/library/useLibrary";
 
 interface AppProps {
   bridge?: AtlasBridge;
 }
 
 export function App({ bridge = atlasBridge }: AppProps) {
-  const [documents, setDocuments] = useState<DocumentSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>();
-
-  useEffect(() => {
-    let active = true;
-
-    void bridge
-      .queryLibrary({
-        sort: "recent",
-        limit: 30,
-      })
-      .then((page) => {
-        if (active) {
-          setDocuments(page.items);
-          setLoading(false);
-        }
-      })
-      .catch((reason: unknown) => {
-        if (active) {
-          setError(reason instanceof Error ? reason.message : "Unknown library error");
-          setLoading(false);
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [bridge]);
+  const library = useLibrary(bridge);
 
   return (
     <div className="app-shell">
@@ -55,7 +25,7 @@ export function App({ bridge = atlasBridge }: AppProps) {
         <nav aria-label="Primary navigation">
           <button className="nav-item nav-item--active" type="button">
             <span>Library</span>
-            <span className="nav-count">{documents.length}</span>
+            <span className="nav-count">{library.documents.length}</span>
           </button>
           <button className="nav-item" disabled type="button">
             Reading queue
@@ -80,34 +50,106 @@ export function App({ bridge = atlasBridge }: AppProps) {
             <span className="eyebrow">Research library</span>
             <h1>Read difficult papers without losing the thread.</h1>
           </div>
-          <div className="environment-chip">
-            <span className="status-dot" aria-hidden="true" />
-            Development foundation
+          <div className="header-actions">
+            <button
+              className="secondary-action"
+              disabled={library.operation !== undefined}
+              onClick={() => void library.refresh()}
+              type="button"
+            >
+              Refresh sources
+            </button>
+            <button
+              className="primary-action"
+              disabled={library.operation !== undefined}
+              onClick={() => void library.importFromPicker()}
+              type="button"
+            >
+              {library.operation === "import" ? "Importing…" : "Import PDF"}
+            </button>
           </div>
         </header>
 
+        <div className="library-toolbar">
+          <form
+            className="search-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void library.search();
+            }}
+          >
+            <label htmlFor="library-search">Search library</label>
+            <div>
+              <input
+                disabled={library.operation !== undefined}
+                id="library-search"
+                onChange={(event) => library.setSearchText(event.currentTarget.value)}
+                placeholder="Title or author"
+                type="search"
+                value={library.searchText}
+              />
+              <button
+                className="secondary-action"
+                disabled={library.operation !== undefined}
+                type="submit"
+              >
+                Search
+              </button>
+            </div>
+          </form>
+          <span className="library-count">
+            {library.documents.length} paper{library.documents.length === 1 ? "" : "s"}
+          </span>
+        </div>
+
+        {library.notice ? (
+          <div
+            className={`notice notice--${library.notice.kind}`}
+            role={library.notice.kind === "error" ? "alert" : "status"}
+          >
+            {library.notice.message}
+          </div>
+        ) : null}
+
         <section className="workspace-body" aria-label="Paper library">
-          <LibraryView documents={documents} loading={loading} error={error} />
+          <LibraryView
+            busyDocumentId={library.busyDocumentId}
+            documents={library.documents}
+            error={library.error}
+            loading={library.loading}
+            onImport={() => void library.importFromPicker()}
+            onRelocate={(document) => void library.relocate(document)}
+            onRemove={(document) => void library.remove(document)}
+          />
         </section>
 
         <footer className="foundation-grid" aria-label="Foundation status">
           <div>
             <span>01</span>
-            <strong>Local library</strong>
-            <p>SQLite migrations and a paginated Library interface are active.</p>
+            <strong>Validated imports</strong>
+            <p>PDF type, size, page count, metadata, and SHA-256 are checked locally.</p>
           </div>
           <div>
             <span>02</span>
-            <strong>ReadingSession</strong>
-            <p>Commands are revisioned, idempotent, and isolated behind one seam.</p>
+            <strong>Referenced files</strong>
+            <p>Atlas stores the original path and never deletes the source PDF.</p>
           </div>
           <div>
             <span>03</span>
-            <strong>External providers</strong>
-            <p>MinerU and translation remain unconfigured until user credentials exist.</p>
+            <strong>Duplicate safe</strong>
+            <p>Identical content reuses one library record and refreshes its source path.</p>
           </div>
         </footer>
       </main>
+
+      {library.dropActive ? (
+        <div className="drop-overlay" role="status">
+          <div>
+            <span>Drop to import</span>
+            <strong>PDF papers only</strong>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

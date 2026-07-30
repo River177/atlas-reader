@@ -13,6 +13,8 @@ serde_json.workspace = true
 sqlx.workspace = true
 
 [dev-dependencies]
+lopdf = "0.44.0"
+tempfile = "3.27.0"
 tokio.workspace = true
 
 [lints]

@@ -37,6 +37,9 @@ importers:
       "@tauri-apps/api":
         specifier: ^2.11.1
         version: 2.11.1
+      "@tauri-apps/plugin-dialog":
+        specifier: ^2.7.2
+        version: 2.7.2
       react:
         specifier: ^19.2.0
         version: 19.2.8
@@ -1157,6 +1160,13 @@ packages:
     engines: { node: ">= 10" }
     hasBin: true
 
+  "@tauri-apps/plugin-dialog@2.7.2":
+    resolution:
+      {
+        integrity: sha1-Mi0IdLrnH+1tEMdhaPoPf01d2HU=,
+        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@tauri-apps/plugin-dialog/-/plugin-dialog-2.7.2.tgz,
+      }
+
   "@testing-library/dom@10.4.1":
     resolution:
       {
@@ -1201,7 +1211,7 @@ packages:
     resolution:
       {
         integrity: sha1-GjHD03iFDSd42rtjdNA23LpLpwg=,
-        tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@types/aria-query/-/aria-query-5.0.4.tgz,
+        tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@types/aria-query/-/aria-query-5.0.4.tgz,
       }
 
   "@types/babel__core@7.20.5":
@@ -1485,7 +1495,7 @@ packages:
     resolution:
       {
         integrity: sha1-CCyyyJyf6GWaMRpTvWpNxTAdswQ=,
-        tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/ansi-regex/-/ansi-regex-5.0.1.tgz,
+        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/ansi-regex/-/ansi-regex-5.0.1.tgz,
       }
     engines: { node: ">=8" }
 
@@ -1493,7 +1503,7 @@ packages:
     resolution:
       {
         integrity: sha1-B0SWkK1Fd30ZJKwquy/IiV26g2s=,
-        tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/ansi-styles/-/ansi-styles-5.2.0.tgz,
+        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/ansi-styles/-/ansi-styles-5.2.0.tgz,
       }
     engines: { node: ">=10" }
 
@@ -1652,7 +1662,7 @@ packages:
     resolution:
       {
         integrity: sha1-JkQhTxmX057Q7g7OcjNUkKesZ74=,
-        tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/dequal/-/dequal-2.0.3.tgz,
+        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/dequal/-/dequal-2.0.3.tgz,
       }
     engines: { node: ">=6" }
 
@@ -1660,7 +1670,7 @@ packages:
     resolution:
       {
         integrity: sha1-WnQp5gZus2ZNkR4z+w5F3o6whFM=,
-        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/dom-accessibility-api/-/dom-accessibility-api-0.5.16.tgz,
+        tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/dom-accessibility-api/-/dom-accessibility-api-0.5.16.tgz,
       }
 
   dom-accessibility-api@0.6.3:
@@ -2283,7 +2293,7 @@ packages:
     resolution:
       {
         integrity: sha1-IYGHn96lGnpYUfs52SD6pj8B2I4=,
-        tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/pretty-format/-/pretty-format-27.5.1.tgz,
+        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/pretty-format/-/pretty-format-27.5.1.tgz,
       }
     engines: { node: ^10.13.0 || ^12.13.0 || ^14.15.0 || >=15.0.0 }
 
@@ -2308,7 +2318,7 @@ packages:
     resolution:
       {
         integrity: sha1-5pHUqOnHiTZWVVOas3J2Kw77VPA=,
-        tarball: https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/react-is/-/react-is-17.0.2.tgz,
+        tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/react-is/-/react-is-17.0.2.tgz,
       }
 
   react-refresh@0.18.0:
@@ -3211,6 +3221,10 @@ snapshots:
       "@tauri-apps/cli-win32-arm64-msvc": 2.11.4
       "@tauri-apps/cli-win32-ia32-msvc": 2.11.4
       "@tauri-apps/cli-win32-x64-msvc": 2.11.4
+
+  "@tauri-apps/plugin-dialog@2.7.2":
+    dependencies:
+      "@tauri-apps/api": 2.11.1
 
   "@testing-library/dom@10.4.1":
     dependencies:

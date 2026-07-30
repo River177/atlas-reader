@@ -3,6 +3,16 @@ use ts_rs::TS;
 
 use crate::DocumentId;
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
+pub enum DocumentFileState {
+    Available,
+    Missing,
+    Changed,
+    Unreadable,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
@@ -45,9 +55,25 @@ pub struct DocumentSummary {
     pub authors: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page_count: Option<u32>,
-    pub source_available: bool,
+    pub file_name: String,
+    pub source_state: DocumentFileState,
     #[ts(type = "number")]
     pub last_opened_at: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename_all = "camelCase")]
+pub struct ImportPdfResult {
+    pub document: DocumentSummary,
+    pub duplicate: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename_all = "camelCase")]
+pub struct RefreshSourcesResult {
+    pub updated: Vec<DocumentSummary>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]

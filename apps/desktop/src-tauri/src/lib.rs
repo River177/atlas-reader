@@ -13,6 +13,7 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let database_path = data_dir.join("atlas.sqlite3");
@@ -25,7 +26,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::library::library_import_pdf,
             commands::library::library_query,
+            commands::library::library_refresh_sources,
+            commands::library::library_relocate,
+            commands::library::library_remove,
             commands::reading_session::reading_session_close,
             commands::reading_session::reading_session_dispatch,
             commands::reading_session::reading_session_open,

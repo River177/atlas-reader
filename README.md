@@ -51,6 +51,30 @@ ATLAS_LIVE_MINERU=1 cargo test -p atlas-adapters --test live_mineru
 The test reads its credential from the same Keychain entry the application writes, so no key is
 needed in the environment or the repository. Save a Cloud MinerU key in Atlas settings first.
 
+### Translation protocol verification
+
+The OpenAI-compatible streaming spike ran against a live endpoint on 2026-07-30. Twelve real paper
+blocks carrying eighteen protection markers were translated three times each across three models,
+with and without `response_format`. All eighteen runs preserved block count, block order, and every
+protection marker verbatim. Hostile text embedded in the source was translated rather than obeyed.
+Section 19 of the product specification records the measured baseline and the three behaviours the
+stream parser must tolerate: Markdown code fences, a JSON array in place of JSON Lines, and a final
+record with no trailing newline.
+
+The decisive finding is that the output field names must be pinned with a literal example. Asking
+only for "one JSON object per block" produced three mutually incompatible shapes across models.
+
+`crates/atlas-adapters/tests/live_translation.rs` pins the connection probe against a real endpoint.
+It is skipped unless `ATLAS_LIVE_TRANSLATION=1` is set:
+
+```sh
+ATLAS_LIVE_TRANSLATION=1 cargo test -p atlas-adapters --test live_translation
+```
+
+Set `ATLAS_LIVE_TRANSLATION_URL` to choose the endpoint; it defaults to `http://127.0.0.1:4141/v1`.
+The credential comes from the Keychain entry the application writes, so save a translation key in
+Atlas settings first.
+
 ## MVP direction
 
 - Lightweight local paper library

@@ -382,11 +382,14 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "atlas-domain",
+ "atlas-parse",
  "atlas-translation",
  "serde",
  "serde_json",
+ "tiktoken-rs",
  "tokio",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]

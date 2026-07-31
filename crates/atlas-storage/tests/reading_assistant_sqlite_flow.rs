@@ -323,6 +323,53 @@ async fn citation_foreign_key_failure_rolls_back_the_message_checkpoint() {
 }
 
 #[tokio::test]
+async fn cancelled_checkpoint_preserves_the_latest_text_and_citations_atomically() {
+    let database = AtlasDatabase::open_in_memory()
+        .await
+        .expect("database should open");
+    fixture(&database).await;
+    let store = SqliteReadingAssistantStore::new(&database);
+    store
+        .queue_response(&first_turn())
+        .await
+        .expect("first turn should queue");
+    store
+        .checkpoint_response(&checkpoint(
+            AssistantMessageState::Streaming,
+            "最新部分回答",
+            20,
+        ))
+        .await
+        .expect("stream should checkpoint");
+
+    store
+        .checkpoint_response(&AssistantResponseCheckpoint {
+            state: AssistantMessageState::Cancelled,
+            text: "最新部分回答".to_owned(),
+            updated_at: 30,
+            ..checkpoint(AssistantMessageState::Cancelled, "", 30)
+        })
+        .await
+        .expect("cancel should persist");
+    let snapshot = store
+        .view(&DocumentId::from("document-1"))
+        .await
+        .expect("conversation should load");
+    let ReadingMessageView::Assistant {
+        state,
+        text,
+        citations,
+        ..
+    } = &snapshot.messages[1]
+    else {
+        panic!("second message should be assistant");
+    };
+    assert_eq!(*state, AssistantMessageState::Cancelled);
+    assert_eq!(text, "最新部分回答");
+    assert_eq!(citations.len(), 1);
+}
+
+#[tokio::test]
 async fn retry_reuses_the_reader_message_without_duplicating_it() {
     let database = AtlasDatabase::open_in_memory()
         .await

@@ -1110,10 +1110,12 @@ type SessionEvent =
 9. `focus_chapter` 采用 last-write-wins，可以忽略过期 Revision。
 10. 同一论文只允许一个前台翻译任务。
 11. 预取永远不能阻塞前台任务。
-12. Reading Message 使用 `messageId` 幂等；重复发送不得创建第二次模型请求。
+12. Transport 重放只由 `commandId` 幂等处理；`userMessageId` 在 Conversation 内单次使用，
+    重复 ID 一律拒绝。
 13. Chat 轮询是只读投影，不能重新触发发送、取消或重试。
-14. `send_message` 的 `userMessageId` 由调用者生成，用于乐观渲染和重试关系；Assistant Message
-    ID 只由 Core 生成。
+14. `send_message` 的 `userMessageId` 由调用者生成，用于乐观渲染和重试关系；调用者重试
+    IPC 必须复用原 `commandId`，不能用同一 Message ID 发起新命令。Assistant Message ID
+    只由 Core 生成。
 15. 问题去除首尾空白后必须为 1–8,000 UTF-8 bytes。
 16. Selection 必须满足 `startUtf16 < endUtf16`、选中文本非空且不超过 4,096 UTF-16 code
     units。
@@ -3251,7 +3253,7 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
 - 每个可点击引用都能定位到当前论文中实际发送过的块。
 - 请求预览准确显示选区、上下文块数和会话轮数。
 
-进展（2026-07-31）：**基础 Module 已完成，主流程尚未接线**。
+进展（2026-07-31）：**核心 Module 已完成，ReadingSession 与 UI 尚未接线**。
 
 - Rust 与生成 TypeScript 合同已完成：嵌套 Reading Assistant Command、UTF-16 Selection
   Input、Reader/Assistant Message 判别联合、重试关系、Citation Target 和 Session schema v3。
@@ -3261,7 +3263,10 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
   最新失败尝试重试、Citation 外键、崩溃恢复和级联清空。
 - OpenAI-compatible Reading Assistant Adapter 已完成：复用 Phase 3 HTTP/SSE Transport，线性解析
   Citation Marker，剥离未知、重复、损坏和超长标记，并保持取消与 finish 语义。
-- 待完成：深 Reading Assistant Module、ReadingSession/Tauri 接线、左侧 Chat UI 和 Phase 4 全量验证。
+- `DefaultReadingAssistantModule` 已完成：发送前选区重验证和请求预算、消息先持久化后调用、
+  `tiktoken-rs` 预算、4 个完整历史轮次、节流且带 trailing flush 的流式 checkpoint、原子取消、
+  失败重试、清空、崩溃恢复和 Citation Target 映射。
+- 待完成：ReadingSession/Tauri 接线、左侧 Chat UI 和 Phase 4 全量验证。
 
 ### 31.6 Phase 5：硬化与 Alpha，2 周
 

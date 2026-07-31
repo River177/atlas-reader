@@ -16,6 +16,8 @@ pub enum AtlasErrorCode {
     DocumentChanged,
     NotFound,
     StaleRevision,
+    StaleSelection,
+    AssistantBusy,
     StorageUnavailable,
     ProviderNotConfigured,
     Internal,
@@ -117,6 +119,24 @@ impl AtlasError {
         Self {
             code: AtlasErrorCode::StaleRevision,
             message: format!("session revision is stale: expected {expected}, current {actual}"),
+            recoverable: true,
+        }
+    }
+
+    #[must_use]
+    pub fn stale_selection() -> Self {
+        Self {
+            code: AtlasErrorCode::StaleSelection,
+            message: "The selected translation changed; select the text again".to_owned(),
+            recoverable: true,
+        }
+    }
+
+    #[must_use]
+    pub fn assistant_busy() -> Self {
+        Self {
+            code: AtlasErrorCode::AssistantBusy,
+            message: "A Reading Assistant response is already in progress".to_owned(),
             recoverable: true,
         }
     }

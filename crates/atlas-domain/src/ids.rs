@@ -34,9 +34,12 @@ macro_rules! string_id {
 }
 
 string_id!(BlockId);
+string_id!(CitationId);
 string_id!(ChapterId);
 string_id!(CommandId);
+string_id!(ConversationId);
 string_id!(DocumentId);
 string_id!(JobId);
+string_id!(ReadingMessageId);
 string_id!(ReaderSourceToken);
 string_id!(SessionId);

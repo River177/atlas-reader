@@ -4,7 +4,7 @@ import type { AtlasBridge } from "../bridge";
 
 export function testBridge(): AtlasBridge {
   const sessionSnapshot = {
-    schemaVersion: 1,
+    schemaVersion: 3,
     sessionId: "session-1",
     documentId: "document-1",
     revision: 0,
@@ -22,6 +22,13 @@ export function testBridge(): AtlasBridge {
       modelId: null,
       activeChapter: null,
       prefetchedChapterId: null,
+    },
+    readingAssistant: {
+      schemaVersion: 1,
+      conversationId: null,
+      messages: [],
+      activeAssistantMessageId: null,
+      latestSelection: null,
     },
   };
   return {

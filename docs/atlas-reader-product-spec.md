@@ -7,7 +7,7 @@
 | 产品名称 | Atlas Reader |
 | 文档版本 | 0.2 |
 | 文档状态 | 聚焦后的 MVP 基线 |
-| 更新日期 | 2026-07-30 |
+| 更新日期 | 2026-07-31 |
 | 目标平台 | macOS 14 及以上，Apple Silicon 优先 |
 | 产品形态 | 独立桌面学术 PDF 双语精读器 |
 | 首发用户 | 阅读英文论文的中文研究生、科研人员和研发工程师 |
@@ -15,7 +15,7 @@
 | 目标语言 | 简体中文 |
 | 账户系统 | 不提供 Atlas 账户 |
 | 多端同步 | 不提供 |
-| 本地存储 | PDF 路径、解析结果、译文、偏好和设置保存在本机 |
+| 本地存储 | PDF 路径、解析结果、译文、阅读对话和设置保存在本机 |
 | 云端解析 | 用户提供 Cloud MinerU API Key；启用后自动上传未缓存 PDF |
 | 翻译模型 | 用户配置的 OpenAI-compatible Endpoint |
 | copilot-api | 作为 OpenAI-compatible 兼容选项，不是安装前提 |
@@ -27,13 +27,13 @@
 
 Atlas Reader 是一款面向中文科研用户的 macOS 学术 PDF 双语精读器。
 
-用户导入英文论文后，可以按章节获得保留标题层级、段落、公式、引用和页码关系的中英对照内容；选中术语、句子或公式后，可以要求中文解释、重新翻译或指定更合适的译法。被用户确认的译法会在本机形成隐式偏好，并影响后续章节，但产品不要求用户维护独立术语表。
+用户导入英文论文后，可以按章节获得保留标题层级、段落、公式、引用和页码关系的中英对照内容。用户选中中文译文后，选区及其对应原文、章节和页码作为 Selection Context 进入左侧 Reading Assistant；用户可以连续追问，AI 回答以可点击引用定位回论文。聊天只帮助理解，绝不修改译文。
 
-Atlas Reader 不提供账户、多端同步或自建模型服务。PDF 文件、解析结果、译文缓存和阅读状态默认保存在本机。用户配置 Cloud MinerU API Key 并启用自动云解析后，未命中有效解析缓存的导入 PDF 会自动发送到配置的 Cloud MinerU Endpoint。翻译模型只接收当前请求所需的章节内容、格式约束和少量相关译法偏好，不接收完整 PDF 或本地文件路径。
+Atlas Reader 不提供账户、多端同步或自建模型服务。PDF 文件、解析结果、译文缓存、阅读状态和文档级 Reading Conversation 默认保存在本机。用户配置 Cloud MinerU API Key 并启用自动云解析后，未命中有效解析缓存的导入 PDF 会自动发送到配置的 Cloud MinerU Endpoint。模型只接收当前翻译或阅读消息所需的选区、对应原文、有限邻近上下文和必要会话窗口，不接收完整 PDF 或本地文件路径。
 
 一句话定义：
 
-> 导入一篇英文论文，在三分钟内开始结构可靠、译法连贯、可随时解释和纠正的中英双语精读。
+> 导入一篇英文论文，在三分钟内开始结构可靠、可选中追问并能引用回原文的中英双语精读。
 
 ---
 
@@ -49,8 +49,8 @@ v0.1 同时定义了论文库、PDF 阅读、全文检索、翻译、单篇问�
 | 解析默认值 | Local MinerU | 用户提供 API Key 的自动 Cloud MinerU |
 | 翻译模型 | 默认依赖本机 copilot-api | 应用内直接配置 OpenAI-compatible Endpoint |
 | copilot-api | 默认模型网关 | 可选兼容 Endpoint |
-| 术语一致性 | 显式术语表 | 隐式译法偏好记忆 |
-| AI 辅助 | 通用论文问答 | 选中内容解释、重译和更换译法 |
+| 术语一致性 | 显式术语表 | 由翻译 Prompt 和章节上下文维持，MVP 不提供用户术语偏好 |
+| AI 辅助 | 通用论文问答 | 选中译文进入文档级 Reading Assistant |
 | 输出 | Markdown、BibTeX、Zotero Note | 应用内阅读与复制 |
 | Agent | MVP 后逐步加入 | 不进入本轮产品边界 |
 | 隐私表述 | 本地优先 | 本地存储、显式云处理 |
@@ -70,14 +70,15 @@ v0.1 同时定义了论文库、PDF 阅读、全文检索、翻译、单篇问�
 5. 打开一个章节并逐段看到中英对照内容。
 6. 在不破坏公式、引用和段落对应关系的前提下连续阅读。
 7. 对不理解的句子、术语或公式获得中文解释。
-8. 对不满意的译文重新翻译或指定译法。
-9. 在后续章节中自动复用已确认的译法。
-10. 复制原文、译文或双语段落。
-11. 关闭并重新打开应用后，从原阅读位置继续。
+8. 将选中译文及对应原文带入左侧聊天，并围绕它连续追问。
+9. 点击 AI 回答中的引用，定位回对应章节、块和 PDF 页。
+10. 取消失败或不再需要的回答，并重试原问题。
+11. 关闭并重新打开应用后，恢复阅读位置和该论文的对话。
+12. 复制原文、译文或双语段落。
 
 ### 3.2 产品目标
 
-- 将“PDF 解析、章节翻译、结构校验、缓存和纠错”组合成一个连续阅读体验。
+- 将“PDF 解析、章节翻译、结构校验、缓存和上下文对话”组合成一个连续阅读体验。
 - 让用户知道每次云端处理发送了什么、发送到哪里以及为什么发送。
 - 将模型和解析提供方保持为可替换 Adapter，避免产品依赖单一厂商。
 - 在模型、网络或解析失败时保护本地数据，并提供明确的重试或降级路径。
@@ -146,16 +147,16 @@ v0.1 同时定义了论文库、PDF 阅读、全文检索、翻译、单篇问�
 - 双栏、脚注、图注和公式造成段落错位。
 - 通用翻译无法稳定保留公式与引用编号。
 - 整篇翻译需要等待过久，用户无法尽快开始阅读。
-- 同一术语在不同章节出现多种译法。
-- 用户纠正一次译法后，后续内容仍重复出错。
-- PDF 阅读器与翻译窗口分离，来回切换打断注意力。
+- 即使已有中文译文，复杂句、公式和论证关系仍需要进一步解释。
+- 把选区复制到外部聊天工具会丢失对应原文、章节和页码，并打断阅读。
+- PDF 阅读器、译文和 AI 聊天窗口分离，来回切换打断注意力。
 - 用户难以确认工具是否上传了完整 PDF。
 - 本地文件路径、全文和历史上下文可能被过度发送。
 - 长请求失败后需要从头开始，重复产生等待和模型费用。
 
 ### 5.2 核心待办任务
 
-> 当我需要精读一篇英文论文时，我希望快速获得与原文逐段对应的中文内容，并能在遇到术语、复杂句或公式时即时解释和纠正，这样我可以保持阅读节奏，而不必在多个工具之间切换。
+> 当我需要精读一篇英文论文时，我希望快速获得与原文逐段对应的中文内容，并能选中不理解的译文在同一界面连续追问、随时定位回论文，这样我可以保持阅读节奏，而不必在多个工具之间搬运上下文。
 
 ---
 
@@ -167,7 +168,7 @@ v0.1 同时定义了论文库、PDF 阅读、全文检索、翻译、单篇问�
 
 ### 6.2 本地存储、可见的自动云解析
 
-- PDF 引用、解析结果、译文、阅读位置和偏好保存在本机。
+- PDF 引用、解析结果、译文、阅读位置和 Reading Conversation 保存在本机。
 - 用户配置 API Key 并启用自动云解析后，缓存未命中的 PDF 会自动发送到 Cloud MinerU。
 - 设置页和 Reader 状态栏持续显示自动云解析开关与目标 Endpoint。
 - 用户可以全局关闭自动云解析；关闭后只使用本地低保真提取。
@@ -178,13 +179,13 @@ v0.1 同时定义了论文库、PDF 阅读、全文检索、翻译、单篇问�
 
 译文可以逐段到达，但不能通过合并段落、删除公式、改写引用或省略内容来换取速度。
 
-### 6.4 用户纠正优先于模型默认
+### 6.4 阅读内容与对话严格分离
 
-用户确认的译法是该论文后续翻译的最高优先级约束。冲突时采用最近一次明确确认的偏好。
+Translation 是已提交的双语阅读内容；Reading Message 是帮助理解的对话内容。聊天回答、取消、重试和引用跳转都不能修改 Translation。
 
 ### 6.5 小 Interface、深 Module
 
-UI 只表达用户意图并渲染状态。解析、重试、缓存、预取、纠错记忆和崩溃恢复都隐藏在 ReadingSession Module 的 Implementation 内。
+UI 只表达用户意图并渲染状态。解析、重试、缓存、预取、Selection Context 组装、对话流、引用校验和崩溃恢复都隐藏在 ReadingSession Module 的 Implementation 内。
 
 ### 6.6 可恢复而不是假装成功
 
@@ -244,14 +245,15 @@ Atlas Reader 不要求注册、登录、订阅或 Atlas 云端存储。外部解
 - 翻译结果本地缓存。
 - 失败块单独重试。
 
-#### 选中辅助
+#### Reading Assistant
 
-- 中文解释。
-- 重新翻译。
-- 按用户说明更换译法。
-- 接受替换后更新当前译文。
-- 将用户确认的译法应用到后续章节。
-- 清除当前论文的全部隐式译法偏好。
+- 选中中文译文后显示 Selection Context，并自动关联对应原文块、章节和页码。
+- 左侧固定 Reading Assistant 聊天框。
+- 围绕当前选区提问并流式显示回答。
+- 每篇论文至多一个本地持久 Reading Conversation，在首条消息时惰性创建。
+- 回答取消、失败重试和应用重启恢复。
+- 回答中的 Citation Target 可定位到章节、Canonical Block 和 PDF 页。
+- 聊天回答不替换、不编辑、不重新生成译文。
 
 #### 复制
 
@@ -267,7 +269,7 @@ Atlas Reader 不要求注册、登录、订阅或 Atlas 云端存储。外部解
 - Cloud MinerU Endpoint 与 Key。
 - Keychain 存储。
 - 当前请求发送内容预览。
-- 解析缓存、译文缓存和译法偏好清理。
+- 解析缓存、译文缓存、阅读对话和日志清理。
 - 本地诊断日志导出。
 
 ### 7.2 明确不包含
@@ -275,7 +277,7 @@ Atlas Reader 不要求注册、登录、订阅或 Atlas 云端存储。外部解
 - Atlas 用户账户、登录、注册和订阅。
 - 多端同步和云端备份。
 - 团队协作和共享论文库。
-- 通用论文聊天与自由问答。
+- 脱离当前论文和 Selection Context 的通用聊天。
 - 多论文比较和文献综述。
 - Research Agent。
 - 研究笔记系统。
@@ -285,6 +287,7 @@ Atlas Reader 不要求注册、登录、订阅或 Atlas 云端存储。外部解
 - 整篇译文导出。
 - 双语 PDF、Word 或 Markdown 导出。
 - 显式术语表管理界面。
+- 译文编辑、重译、用户术语偏好和聊天驱动的译文替换。
 - DOI、arXiv、BibTeX 或 RIS 在线导入。
 - Local MinerU 安装与运行管理。
 - Atlas 托管的 MinerU 或翻译模型。
@@ -368,18 +371,23 @@ Cloud MinerU 设置页必须显示：
 
 预取只处理下一章节，不形成递归整篇翻译。
 
-### 8.5 解释与纠正
+### 8.5 选中译文并向 Reading Assistant 提问
 
 ```text
-选中原文、译文或公式
-  → 选择“解释”“重译”或“更换译法”
-  → 只发送当前选区、所属块和必要章节上下文
-  → 流式显示结果
-  → 用户接受结果
-  → 更新当前块译文
-  → 若为明确译法，写入本论文的隐式偏好
-  → 使包含同一源短语的预取缓存失效
+选中中文译文
+  → 左侧聊天框显示可移除的 Selection Context
+  → Core 校验选区仍属于当前活动译文
+  → 自动取得对应原文块、章节、页码和有限邻近上下文
+  → 用户输入问题
+  → Reading Assistant 流式回答
+  → 引用标记只允许指向本次上下文内的 Canonical Block
+  → 点击引用定位到章节、块或 PDF 页
+  → 用户可继续追问、取消当前回答或重试原问题
+  → 消息、Selection Context 和 Citation Target 在本机按论文持久化
 ```
+
+新的选区替换左侧待发送的 Selection Context。发送后，该上下文固化到对应 Reading Message；
+后续追问可以继续使用最近一次上下文，用户也可以清除或替换。整个流程不会修改 Translation。
 
 ### 8.6 重新打开
 
@@ -407,7 +415,7 @@ Atlas Reader
 │   ├── PDF
 │   ├── Outline
 │   ├── Search
-│   └── Inline Assist
+│   └── Reading Assistant
 └── Settings
     ├── General
     ├── Parsing
@@ -419,20 +427,19 @@ Atlas Reader
 ### 9.1 主窗口
 
 ```text
-┌──────────────────────────────────────────────────────────────────────┐
-│ Library  Paper title                 Parse status  Model  Settings   │
-├───────────────┬──────────────────────────────────────────────────────┤
-│ Outline       │ Bilingual | PDF                                      │
-│               │                                                      │
-│ Abstract      │ English source               中文译文                │
-│ Introduction  │ ───────────────────────────────────────────────────  │
-│ Method        │ aligned source block         aligned target block    │
-│ Experiments   │ equation / citation          preserved equation      │
-│ Conclusion    │ page badge                   copy / explain / retry   │
-│               │                                                      │
-├───────────────┴──────────────────────────────────────────────────────┤
-│ Page  Parse backend  Translation progress  Endpoint  Cancel          │
-└──────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│ Library  Paper title                   Parse status  Model  Settings   │
+├─────────────────────┬──────────────────────────────────────────────────┤
+│ Outline | AI        │ Bilingual | PDF                                  │
+│                     │                                                  │
+│ [选区上下文卡片 ×]   │ English source              中文译文             │
+│ User: 为什么…       │ ──────────────────────────────────────────────── │
+│ AI: … [p.4]         │ aligned source block        selected target text │
+│                     │ equation / citation         preserved equation   │
+│ [输入问题…] [停止]   │ page badge                  copy                 │
+├─────────────────────┴──────────────────────────────────────────────────┤
+│ Page  Parse backend  Translation progress  Endpoint  Cancel            │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 9.2 视觉和交互规则
@@ -440,11 +447,15 @@ Atlas Reader
 - 双语视图是默认阅读模式。
 - 原文与译文使用等宽网格对齐，但允许长译文自然扩展高度。
 - 同一块的两列共享悬停和选中状态。
+- 左侧栏在 Outline 与 Reading Assistant 间切换；选中中文译文时自动打开 Assistant，并显示
+  可移除的 Selection Context 卡片。
+- Chat 发送后选区保持高亮；点击 Citation Target 时高亮对应块并滚动定位。
+- 窄窗口下左侧栏成为覆盖式抽屉，但消息输入、停止按钮和上下文卡片始终可访问。
 - 公式在两列中使用同一 LaTeX 源渲染。
 - 引用编号不翻译。
 - 页面徽标点击后切换到 PDF 并定位页面。
 - 翻译未完成时只显示块级骨架，不锁住整章滚动。
-- 失败块保留原文，并提供单块重试。
+- 失败块保留原文，并提供单块翻译重试；Reading Assistant 不提供译文修改入口。
 - 解析和翻译进度分别显示，避免用户误认为解析完成即翻译完成。
 - 所有云端操作显示目标 Endpoint 的主机名。
 
@@ -502,26 +513,30 @@ Atlas Reader
 | TR-003 | 前台优先 | 用户打开预取章节时任务立即提升为前台 |
 | TR-004 | 结构保护 | 公式和引用保护标记必须逐个、原样返回 |
 | TR-005 | 不省略 | 每个源块必须产生目标块或明确失败状态 |
-| TR-006 | 缓存 | 模型、Prompt、源块和相关偏好未变化时复用结果 |
+| TR-006 | 缓存 | 模型、Prompt、源块和翻译模式未变化时复用结果 |
 | TR-007 | 流式显示 | 以完整块为最小提交单位，不显示半个 JSON 或残缺公式 |
 | TR-008 | 局部修复 | 校验失败时只重试失败块，不重译已提交块 |
 | TR-009 | 取消 | 停止创建新批次并取消当前网络流 |
 | TR-010 | 提供方兼容 | `/v1/models` 不可用时允许手动输入模型 ID |
 | TR-011 | 请求上限 | 发送前执行 Token 和 UTF-8 字节双重预算 |
-| TR-012 | 缓存失效 | 只使受新译法偏好影响的块或章节失效 |
+| TR-012 | 缓存失效 | 只有源块、模型、Endpoint、Prompt 或翻译模式变化时失效 |
 
-### 10.5 Inline Assist
+### 10.5 Reading Assistant
 
 | ID | 需求 | 验收 |
 |---|---|---|
-| INL-001 | 解释 | 对术语、句子和公式给出中文解释 |
-| INL-002 | 重译 | 生成替代译文，用户确认后替换 |
-| INL-003 | 更换译法 | 用户可以输入明确目标译法 |
-| INL-004 | 偏好记忆 | 确认的源短语与目标译法用于后续相关块 |
-| INL-005 | 最小上下文 | 请求只包含选区、所属块和当前章节内必要上下文 |
-| INL-006 | 无显式术语表 | MVP 不提供偏好列表、批量编辑或导入导出 |
-| INL-007 | 清除能力 | 用户可以清空当前论文的全部译法偏好 |
-| INL-008 | 冲突规则 | 同一源短语采用最近一次明确确认的译法 |
+| CHAT-001 | 译文选区 | 只接受当前活动译文上的非空文本选区，并在 Core 重新校验 |
+| CHAT-002 | 上下文组装 | 自动附带对应原文块、章节、页码和预算内邻近块 |
+| CHAT-003 | 左侧聊天 | Selection Context 以可移除卡片显示在左侧聊天框 |
+| CHAT-004 | 流式回答 | 以文本增量显示，不等待完整回答结束 |
+| CHAT-005 | 文档级持久化 | 每篇论文至多一个 Reading Conversation，首条消息时创建，重开应用后恢复 |
+| CHAT-006 | 连续追问 | 无新选区时可继续使用最近一次 Selection Context 和有限会话窗口 |
+| CHAT-007 | 取消与重试 | 取消保留已到达文本并标记状态；重试复用原问题和上下文 |
+| CHAT-008 | 引用定位 | 引用只允许指向已发送上下文中的块，并可跳转到块或 PDF 页 |
+| CHAT-009 | 非变更性 | 任何聊天操作都不能修改 Translation Row 或翻译缓存键 |
+| CHAT-010 | 文档范围 | 对话只能引用当前 Document，不执行跨论文检索或网页搜索 |
+| CHAT-011 | 可恢复 | 崩溃后已完成消息保留，流式中断消息可显式重试 |
+| CHAT-012 | 请求预览 | 显示选区、上下文块数和会话轮数，不展示密钥 |
 
 ### 10.6 Copy
 
@@ -541,7 +556,7 @@ Atlas Reader
 | SET-003 | 连接测试 | 区分 DNS、TLS、鉴权、限流和协议不兼容 |
 | SET-004 | 本机 HTTP | 只允许 `localhost`、`127.0.0.1` 和 `::1` 使用 HTTP |
 | SET-005 | 远端 HTTPS | 非本机 Endpoint 必须使用 HTTPS |
-| SET-006 | 清理数据 | 可分别清理解析、译文、偏好和日志 |
+| SET-006 | 清理数据 | 可分别清理解析、译文、阅读对话和日志 |
 | SET-007 | 重置设置 | 不删除论文源文件 |
 
 ---
@@ -556,9 +571,11 @@ Atlas Reader
 | 本地绝对路径 | 是 | 否 | 否 |
 | PDF SHA-256 | 是 | 仅作为客户端幂等或诊断标识时发送 | 否 |
 | 当前章节源文本 | 是 | 包含在完整 PDF 中 | 用户发起翻译时发送 |
-| 当前选区与说明 | 是或仅会话内保存 | 否 | 用户发起辅助时发送 |
-| 相关译法偏好 | 是 | 否 | 只发送与当前内容匹配的少量样例 |
-| 全部译法偏好历史 | 是 | 否 | 否 |
+| 当前译文选区与问题 | 是，随 Reading Message 保存 | 否 | 用户发送阅读消息时发送 |
+| 对应原文与有限邻近上下文 | 是 | 包含在完整 PDF 中 | 用户发送阅读消息时发送 |
+| 有限会话窗口 | 是 | 否 | 连续追问时发送 |
+| 全部历史对话 | 是 | 否 | 否 |
+| Assistant 回答与引用 | 是 | 否 | 由模型返回 |
 | 译文缓存 | 是 | 否 | 否 |
 | 阅读位置 | 是 | 否 | 否 |
 | API Key | Keychain | 作为认证 Header 使用 | 作为认证 Header 使用 |
@@ -574,7 +591,8 @@ Atlas Reader
 - Cloud MinerU 的远端保留和删除能力取决于用户配置的提供方。
 - Atlas Reader 不能在提供方没有删除接口时承诺远端副本已删除。
 - 翻译请求不会包含本地路径、完整 PDF 或其他论文内容。
-- 译法偏好不是完全本地计算：与当前请求匹配的偏好样例会发送给翻译模型，以实现后续一致性。
+- Reading Assistant 只发送当前 Selection Context、预算内论文上下文、当前问题和有限会话窗口。
+- 聊天历史完整列表不会随每次请求发送，聊天回答不会写入 Translation。
 
 ### 11.3 请求预览
 
@@ -594,8 +612,17 @@ Cloud MinerU 设置披露示例：
 ```text
 目标：https://models.example.com
 模型：user-selected-model
-将发送：当前章节的 12 个文本块，3 条相关译法偏好
-不会发送：完整 PDF、本地文件路径、其他章节、全部偏好历史
+将发送：当前章节的 12 个文本块
+不会发送：完整 PDF、本地文件路径、其他章节、阅读对话
+```
+
+Reading Assistant 请求预览示例：
+
+```text
+目标：https://models.example.com
+模型：user-selected-model
+将发送：1 个译文选区、对应原文块、2 个邻近块、最近 4 轮对话
+不会发送：完整 PDF、本地文件路径、其他论文、完整对话历史
 ```
 
 ---
@@ -699,7 +726,7 @@ flowchart LR
 
 ### 13.3 架构决策
 
-1. ReadingSession 是跨导入、解析、翻译和纠错的深 Module。
+1. ReadingSession 是跨导入、解析、翻译和 Reading Conversation 的深 Module。
 2. UI 不直接调用 Cloud MinerU 或模型。
 3. UI 不负责重试、缓存键、任务恢复和预取调度。
 4. SQLite 与文件系统是本地可替换依赖，不暴露在外部 Interface。
@@ -719,7 +746,7 @@ flowchart LR
 2. 派发用户意图。
 3. 关闭订阅与会话。
 
-导入、Cloud MinerU、结构规范化、翻译批处理、缓存、预取、偏好记忆、重试、取消和崩溃恢复都属于 Implementation。
+导入、Cloud MinerU、结构规范化、翻译批处理、缓存、预取、Selection Context 组装、对话持久化、引用校验、重试、取消和崩溃恢复都属于 Implementation。
 
 ### 14.2 Interface
 
@@ -732,6 +759,9 @@ type ChapterId = string;
 type BlockId = string;
 type JobId = string;
 type CommandId = string;
+type CitationId = string;
+type ConversationId = string;
+type ReadingMessageId = string;
 type UnixMs = number;
 
 interface ReadingSessionModule {
@@ -787,46 +817,39 @@ type ReadingCommand =
       chapterId: ChapterId;
     }
   | {
-      type: "request_inline_assist";
-      requestId: string;
-      target: SelectionTarget;
-      action: "explain" | "retranslate";
-      instruction?: string;
+      type: "retry_translation";
+      chapterId: ChapterId;
     }
   | {
-      type: "accept_inline_replacement";
-      requestId: string;
-      blockId: BlockId;
-      replacement: string;
-      rememberWording: boolean;
-      sourcePhrase?: string;
-    }
-  | {
-      type: "set_preferred_wording";
-      blockId: BlockId;
-      sourcePhrase: string;
-      preferredTarget: string;
-    }
-  | {
-      type: "retry_job";
-      jobId: JobId;
-    }
-  | {
-      type: "cancel_job";
-      jobId: JobId;
-    }
-  | {
-      type: "clear_document_preferences";
-      documentId: DocumentId;
+      type: "reading_assistant";
+      command: ReadingAssistantCommand;
     };
 
-interface SelectionTarget {
-  chapterId: ChapterId;
+type ReadingAssistantCommand =
+  | {
+      type: "send_message";
+      userMessageId: ReadingMessageId;
+      text: string;
+      selection: SelectionContextInput | null;
+    }
+  | {
+      type: "cancel_response";
+      assistantMessageId: ReadingMessageId;
+    }
+  | {
+      type: "retry_response";
+      userMessageId: ReadingMessageId;
+    }
+  | {
+      type: "clear_conversation";
+    };
+
+interface SelectionContextInput {
   blockId: BlockId;
-  sourceStartUtf16: number;
-  sourceEndUtf16: number;
-  selectedSource: string;
-  selectedTranslation?: string;
+  sourceDigest: string;
+  startUtf16: number;
+  endUtf16: number;
+  selectedText: string;
 }
 ```
 
@@ -834,7 +857,7 @@ interface SelectionTarget {
 
 ```ts
 interface SessionSnapshot {
-  schemaVersion: 1;
+  schemaVersion: 3;
   sessionId: SessionId;
   documentId: DocumentId;
   revision: number;
@@ -850,7 +873,7 @@ interface SessionSnapshot {
   activeChapter?: ChapterView;
   activeJobs: JobSummary[];
   providerStatus: ProviderStatusSnapshot;
-  inlineAssist?: InlineAssistSnapshot;
+  readingAssistant: ReadingAssistantSnapshot;
   notices: UserNotice[];
 }
 
@@ -959,7 +982,7 @@ interface TableCell {
 
 interface JobSummary {
   id: JobId;
-  kind: "cloud_parse" | "normalize" | "translate" | "prefetch" | "inline_assist";
+  kind: "cloud_parse" | "normalize" | "translate" | "prefetch" | "reading_chat";
   state:
     | "queued"
     | "running"
@@ -980,12 +1003,53 @@ interface ProviderStatusSnapshot {
   translationModel?: string;
 }
 
-interface InlineAssistSnapshot {
-  requestId: string;
-  state: "running" | "ready" | "failed";
-  action: "explain" | "retranslate";
-  text: string;
-  replacementCandidate?: string;
+interface ReadingAssistantSnapshot {
+  schemaVersion: 1;
+  conversationId: ConversationId | null;
+  messages: ReadingMessageView[];
+  activeAssistantMessageId: ReadingMessageId | null;
+  latestSelection: SelectionContext | null;
+}
+
+type ReadingMessageView =
+  | {
+      role: "reader";
+      id: ReadingMessageId;
+      text: string;
+      selectionContext: SelectionContext | null;
+      createdAt: UnixMs;
+    }
+  | {
+      role: "assistant";
+      id: ReadingMessageId;
+      respondingTo: ReadingMessageId;
+      state: "queued" | "streaming" | "ready" | "failed" | "cancelled";
+      text: string;
+      citations: CitationTarget[];
+      retryOfMessageId: ReadingMessageId | null;
+      safeMessage: string | null;
+      createdAt: UnixMs;
+      updatedAt: UnixMs;
+    };
+
+interface SelectionContext {
+  blockId: BlockId;
+  chapterId: ChapterId;
+  pageStart: number;
+  pageEnd: number;
+  sourceDigest: string;
+  startUtf16: number;
+  endUtf16: number;
+  selectedText: string;
+  alignedSource: string;
+}
+
+interface CitationTarget {
+  id: CitationId;
+  blockId: BlockId;
+  chapterId: ChapterId;
+  page: number;
+  label: string;
 }
 
 interface UserNotice {
@@ -1020,7 +1084,13 @@ type SessionEvent =
       chapterSummary: ChapterSummary;
     }
   | { type: "job_changed"; job: JobSummary }
-  | { type: "inline_assist_changed"; value?: InlineAssistSnapshot }
+  | { type: "reading_assistant_changed"; value: ReadingAssistantSnapshot }
+  | {
+      type: "reading_message_delta";
+      conversationId: string;
+      messageId: string;
+      append: string;
+    }
   | { type: "notice_raised"; notice: UserNotice }
   | { type: "session_closed" };
 ```
@@ -1032,12 +1102,28 @@ type SessionEvent =
 3. 每个 Session 的事件 `sequence` 严格递增。
 4. UI 检测到序号缺口时，重新调用 `open` 获取完整 Snapshot。
 5. 进度事件最高每秒 4 次。
-6. 模型 Token 不直接穿过 IPC；只有完成校验的块才产生 `blocks_upserted`。
+6. Provider 原始 Chunk 不直接穿过 IPC；Translation 只有完成校验的块产生
+   `blocks_upserted`，Reading Assistant 只有经过大小和引用标记处理的文本产生
+   `reading_message_delta`。
 7. `commandId` 在 24 小时内幂等，重复命令返回原 Receipt。
-8. 纠正命令必须携带 `expectedRevision`；状态过期时拒绝执行。
+8. 选区发送前必须用 Source Digest、UTF-16 偏移和文本重新校验；过期选区拒绝执行。
 9. `focus_chapter` 采用 last-write-wins，可以忽略过期 Revision。
 10. 同一论文只允许一个前台翻译任务。
 11. 预取永远不能阻塞前台任务。
+12. Reading Message 使用 `messageId` 幂等；重复发送不得创建第二次模型请求。
+13. Chat 轮询是只读投影，不能重新触发发送、取消或重试。
+14. `send_message` 的 `userMessageId` 由调用者生成，用于乐观渲染和重试关系；Assistant Message
+    ID 只由 Core 生成。
+15. 问题去除首尾空白后必须为 1–8,000 UTF-8 bytes。
+16. Selection 必须满足 `startUtf16 < endUtf16`、选中文本非空且不超过 4,096 UTF-16 code
+    units。
+17. 没有新 Selection 时只能复用 Snapshot 中的 `latestSelection`；空对话不能发送无上下文问题。
+18. 同一 Conversation 最多一个 `queued` 或 `streaming` Assistant Message，否则返回
+    `assistant_busy`。
+19. `retry_response` 只接受已有 User Message，且其最近 Assistant 尝试必须为 `failed` 或
+    `cancelled`。
+20. `clear_conversation` 作用域由 Session 的 Document 决定，前端不能指定或切换其他
+    Conversation ID。
 12. `close` 关闭订阅；是否取消前台任务由参数明确决定。
 13. 所有错误通过 Receipt、Snapshot 或事件表达，不跨 IPC 抛出未分类字符串。
 
@@ -1620,12 +1706,7 @@ MinerU 不提供客户端幂等键，但提供两个足以避免重复上传的�
     "addNoSummary": true,
     "academicNaturalness": true
   },
-  "preferences": [
-    {
-      "source": "retrieval-augmented generation",
-      "target": "检索增强生成"
-    }
-  ],
+  "preferences": [],
   "blocks": [
     {
       "id": "block-01",
@@ -1747,6 +1828,10 @@ SHA-256(
 
 API Key 不进入缓存键。
 
+`preferences` 与 `applicable_preference_digest` 是 Phase 3 已发布合同中的保留字段，在当前 MVP
+固定为空，不保存或发送用户术语偏好。Phase 4 Reading Assistant 使用独立消息与上下文模型，
+不能复用这两个字段影响 Translation。
+
 ### 19.9 实测基准
 
 2026-07-30 对本地 OpenAI-compatible 端点实测，输入为真实论文的 12 个块，
@@ -1792,7 +1877,7 @@ API Key 不进入缓存键。
 | 结构校验失败 | 只修复失败块 1 次 |
 | 用户取消 | 不重试 |
 
-已持久化的块不会再次请求，除非缓存键变化或用户明确重译。
+已持久化的块不会再次请求，除非缓存键变化或用户明确重试失败块。
 
 ### 19.11 预取
 
@@ -1807,51 +1892,104 @@ API Key 不进入缓存键。
 
 ---
 
-## 20. 隐式译法偏好
+## 20. Reading Assistant
 
-### 20.1 数据
+### 20.1 Module 与 Seam
 
-每条偏好保存：
+外部 Seam 仍位于 ReadingSession。React 只派发一个 `reading_assistant` 外层命令，其中嵌套
+`send_message`、`cancel_response`、`retry_response` 或 `clear_conversation`；不能直接组装
+Prompt、调用 Provider 或写消息表。
 
-- Document ID。
-- 源短语。
-- 用户确认的目标译法。
-- 来源 Block ID。
-- 创建和更新时间。
-- 使用次数。
-- 最近命中时间。
+内部 Reading Assistant Module 使用一个命令入口和一个只读入口：
 
-### 20.2 创建规则
+```rust
+trait ReadingAssistantModule {
+    async fn dispatch(
+        &self,
+        command: ReadingAssistantCommand,
+    ) -> Result<ReadingAssistantSnapshot, AtlasError>;
 
-- “解释”不会创建偏好。
-- “重译”只有在用户点击“使用此译文”并启用“后续沿用”时创建偏好。
-- “更换译法”默认创建偏好，并在提交前明确提示。
-- 源短语少于 2 个字符或超过 200 个字符时不创建偏好。
-- 整段替换只更新当前块，不作为术语偏好；用户可从中选择更短短语。
+    async fn view(
+        &self,
+        document_id: &DocumentId,
+    ) -> Result<ReadingAssistantSnapshot, AtlasError>;
+}
+```
 
-### 20.3 检索规则
+Selection Context 校验、上下文预算、会话窗口、Prompt、SSE、持久化、Citation Marker、取消、
+重试和恢复全部属于 Implementation。Provider、Store 和时钟是内部 Seam，各自至少有生产与测试
+Adapter。
 
-MVP 不使用 Embedding：
+### 20.2 领域规则
 
-1. 对当前批次源文本做 Unicode 规范化和大小写折叠。
-2. 精确匹配源短语。
-3. 按短语长度、最近更新时间和使用次数排序。
-4. 每个请求最多注入 20 条。
-5. 总偏好文本不超过输入预算的 5%。
+- 每个 Document 在 MVP 中至多有一个持久 Reading Conversation；首条消息时惰性创建，清空后
+  Snapshot 回到无 Conversation 的默认状态。
+- Reading Conversation 只属于一个 Document，不能引用其他论文。
+- Reading Message 分为用户问题和 Assistant 回答。
+- Selection Context 是某条用户消息的可验证上下文快照，不是可编辑译文。
+- Citation Target 只能指向当前 Document 中、实际进入该次模型上下文的 Canonical Block。
+- Reading Assistant 永远不能写 Translation Row、改变翻译缓存键或触发重译。
 
-### 20.4 缓存失效
+### 20.3 Selection Context
 
-新偏好写入后：
+UI 发送：
 
-1. 通过 Blocks FTS 查找包含源短语的块。
-2. 当前块写入用户确认的译文。
-3. 尚未打开的受影响预取译文标记为 `stale`。
-4. 已经阅读过的历史章节不自动产生模型费用。
-5. 用户再次打开含匹配短语的历史章节时，显示“译法偏好已更新”，并允许局部刷新。
+- Block ID。
+- 当前 Canonical Source Digest。
+- 译文 UTF-16 起止偏移。
+- 用户看到并选中的中文文本。
 
-### 20.5 隐私
+Core 必须重新读取活动 Translation，验证 Digest、偏移边界和文本完全一致，然后自行取得：
 
-偏好完整列表只保存在本机。匹配当前请求的源短语与目标译法会随该请求发送给翻译模型。请求预览显示偏好条数。
+- 对应 Canonical Source Block。
+- 章节标题和页码范围。
+- 选区所属目标块全文。
+- 预算内前后邻近块。
+
+验证失败时返回“选区已过期”，不得把 UI 提供的文本当作可信论文上下文继续发送。
+
+### 20.4 上下文预算
+
+Reading Assistant 请求由以下部分组成：
+
+1. 固定系统规则。
+2. 当前 Selection Context。
+3. 对应原文块和目标块。
+4. 最多前后各 2 个相关块，按剩余预算裁剪。
+5. 最近会话窗口，默认最多 4 轮。
+6. 当前用户问题。
+
+完整 PDF、其他论文、完整对话历史和本地路径永不进入请求。论文、译文、用户问题和历史回答都视为不可信数据，不能覆盖系统规则。
+
+### 20.5 流式回答
+
+- 使用当前 OpenAI-compatible Chat Completions Adapter。
+- Assistant Message 在请求发出前以 `queued` 持久化。
+- 收到首个文本增量后变为 `streaming`，文本按节流后的增量持久化。
+- 正常结束变为 `ready`。
+- 用户取消时保留已到达文本并变为 `cancelled`。
+- 失败时保留安全错误和已到达文本并变为 `failed`。
+- 重试复用原 User Message 与 Selection Context，创建新的 Assistant Message，并通过 `retry_of_message_id` 关联旧回答。
+
+### 20.6 引用定位
+
+发送给模型的上下文块使用本次请求随机生成的短 Citation ID，例如 `ctx-01`，不暴露数据库主键。
+系统规则要求模型通过保护标记 `⟦ATLAS-CITE:ctx-01⟧` 引用。解析器：
+
+1. 只接受本次请求声明过的 Citation ID。
+2. 删除未知、重复或损坏标记并记录安全警告。
+3. 将合法标记转换为 Citation Target。
+4. 点击 Citation Target 时先聚焦章节和块，再允许跳转 PDF 页。
+
+模型没有返回引用时，回答仍可显示，但 UI 标记“未提供论文定位”，不能伪造引用。
+
+### 20.7 对话持久化与清理
+
+- Conversation、Message、Selection Context 和 Citation Target 全部保存在本机 SQLite。
+- 重开论文时恢复消息和最近 Selection Context，不自动重发失败请求。
+- 清空对话只删除 Reading Conversation 数据，不删除 PDF、解析结果或 Translation。
+- 删除书架记录时级联删除该论文对话。
+- 日志不记录用户问题、选区、回答正文或引用摘录。
 
 ---
 
@@ -1886,10 +2024,11 @@ MVP 不使用 Embedding：
 
 ### 21.3 背压
 
-- Channel 只发送完成的块和节流后的进度。
+- Channel 只发送完成的翻译块、节流后的进度和清理后的 Chat 文本增量。
 - `blocks_upserted` 每批最多 20 个块和 256 KB。
+- `reading_message_delta` 最高每秒 10 次、单次最多 16 KB；发送前 Message checkpoint 必须先持久化。
 - Channel 写入超过 2 秒时合并后续进度事件。
-- 不能丢弃译文块事件；发送失败时保留数据库状态并终止该 Subscriber。
+- 不能丢弃译文块或终态 Message 事件；发送失败时保留数据库状态并终止该 Subscriber。
 - UI 重新 `open` 后从 Snapshot 恢复，不要求重放全部事件。
 
 ### 21.4 多窗口策略
@@ -2131,22 +2270,48 @@ CREATE TRIGGER blocks_au AFTER UPDATE OF source_plain_text ON blocks BEGIN
   VALUES (new.row_id, new.source_plain_text);
 END;
 
-CREATE TABLE translation_preferences (
+CREATE TABLE reading_conversations (
   id TEXT PRIMARY KEY,
-  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  source_phrase TEXT NOT NULL,
-  normalized_source_phrase TEXT NOT NULL,
-  preferred_target TEXT NOT NULL,
-  context_block_id TEXT REFERENCES blocks(id) ON DELETE SET NULL,
-  use_count INTEGER NOT NULL DEFAULT 0,
-  last_matched_at INTEGER,
+  document_id TEXT NOT NULL UNIQUE REFERENCES documents(id) ON DELETE CASCADE,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  UNIQUE (document_id, normalized_source_phrase)
+  updated_at INTEGER NOT NULL
 );
 
-CREATE INDEX translation_preferences_document_idx
-  ON translation_preferences(document_id, updated_at DESC);
+CREATE TABLE reading_messages (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL
+    REFERENCES reading_conversations(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+  state TEXT NOT NULL CHECK (
+    state IN ('queued', 'streaming', 'ready', 'failed', 'cancelled')
+  ),
+  text TEXT NOT NULL DEFAULT '',
+  selection_context_json TEXT,
+  endpoint_fingerprint TEXT,
+  model_id TEXT,
+  retry_of_message_id TEXT REFERENCES reading_messages(id) ON DELETE SET NULL,
+  error_code TEXT,
+  error_safe_json TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX reading_messages_conversation_idx
+  ON reading_messages(conversation_id, created_at, id);
+
+CREATE TABLE reading_citations (
+  id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL REFERENCES reading_messages(id) ON DELETE CASCADE,
+  chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  block_id TEXT NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+  page INTEGER NOT NULL CHECK (page >= 1),
+  label TEXT NOT NULL,
+  order_index INTEGER NOT NULL CHECK (order_index >= 0),
+  UNIQUE (message_id, order_index)
+);
+
+CREATE INDEX reading_citations_block_idx
+  ON reading_citations(block_id, message_id);
 
 CREATE TABLE translations (
   id TEXT PRIMARY KEY,
@@ -2157,7 +2322,7 @@ CREATE TABLE translations (
   provider_profile_fingerprint TEXT NOT NULL,
   model_id TEXT NOT NULL,
   prompt_version TEXT NOT NULL,
-  applicable_preference_digest TEXT NOT NULL,
+  applicable_preference_digest TEXT NOT NULL DEFAULT '',
   target_json TEXT,
   target_plain_text TEXT,
   state TEXT NOT NULL CHECK (
@@ -2182,7 +2347,7 @@ CREATE TABLE jobs (
   document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   chapter_id TEXT REFERENCES chapters(id) ON DELETE CASCADE,
   kind TEXT NOT NULL CHECK (
-    kind IN ('cloud_parse', 'normalize', 'translate', 'prefetch', 'inline_assist')
+    kind IN ('cloud_parse', 'normalize', 'translate', 'prefetch', 'reading_chat')
   ),
   priority INTEGER NOT NULL,
   state TEXT NOT NULL CHECK (
@@ -2488,6 +2653,9 @@ base-uri 'none';
 - 表格和复制 HTML 使用明确标签允许列表。
 - Prompt 固定声明论文内容不能覆盖系统规则。
 - 模型返回的链接不自动打开。
+- Reading Assistant 输出只渲染受限 Markdown，不接受模型 HTML。
+- Citation Marker 只有命中本次请求随机 ID 允许列表时才能变成可点击目标。
+- Selection Context 中的译文、原文、用户问题和历史回答都不能改变系统任务或调用工具。
 
 ### 25.5 密钥
 
@@ -2530,6 +2698,10 @@ interface SessionError {
     | "model_context_exceeded"
     | "translation_invalid"
     | "translation_failed"
+    | "stale_selection"
+    | "assistant_busy"
+    | "reading_chat_failed"
+    | "citation_invalid"
     | "storage_busy"
     | "storage_corrupt"
     | "cancelled"
@@ -2561,6 +2733,10 @@ interface SessionError {
 | 模型 401/403 | 保留任务和已完成块，要求更新 Key |
 | 模型 429 | 延迟重试并显示等待时间 |
 | 单块结构错误 | 局部修复；再次失败则只标记该块 |
+| Reading Assistant 未配置 | 双语阅读可用，左侧聊天显示设置入口 |
+| Chat 流中断 | 保留部分回答并标记失败，允许重试原问题 |
+| Chat 取消 | 保留部分回答并标记取消，不自动重试 |
+| Chat 引用未知块 | 不创建 Citation Target，回答显示安全警告 |
 | 应用崩溃 | 从持久 Job 和已提交块恢复 |
 | PDF 被移动 | 使用缓存阅读，要求重新定位后才能打开 PDF |
 | PDF 内容变化 | 停止旧任务并废弃旧缓存，要求重新导入 |
@@ -2593,7 +2769,7 @@ interface SessionError {
 - 完整 PDF 内容。
 - 完整章节文本。
 - 完整译文。
-- 用户输入的完整说明。
+- 用户问题、Selection Context 和 Chat 回答正文。
 - 本地绝对路径。
 - Cloud 上传 Body。
 - 未脱敏 HTTP Header。
@@ -2616,7 +2792,7 @@ MVP 不上传遥测。以下指标保存在本地：
 - `translation_first_block_ms`
 - `chapter_readable_ms`
 - `chapter_cache_load_ms`
-- `inline_first_output_ms`
+- `reading_chat_first_output_ms`
 
 用户可以在 Diagnostics 查看汇总并主动导出。任何未来遥测必须单独获得明确同意。
 
@@ -2637,6 +2813,7 @@ Atlas/
 │       │   ├── features/
 │       │   │   ├── library/
 │       │   │   ├── reader/
+│       │   │   ├── reading-assistant/
 │       │   │   └── settings/
 │       │   ├── shared/
 │       │   └── main.tsx
@@ -2664,8 +2841,15 @@ Atlas/
 │   │       ├── interface.rs
 │   │       ├── parse_flow.rs
 │   │       ├── translation_flow.rs
-│   │       ├── preference_memory.rs
+│   │       ├── reading_assistant.rs
 │   │       └── recovery.rs
+│   ├── atlas-reading-assistant/
+│   │   └── src/
+│   │       ├── module.rs
+│   │       ├── context.rs
+│   │       ├── citations.rs
+│   │       ├── provider.rs
+│   │       └── store.rs
 │   ├── atlas-library/
 │   ├── atlas-storage/
 │   │   ├── migrations/
@@ -2725,7 +2909,7 @@ Domain 不依赖 Tauri、SQLx、reqwest 或 React。
 | Adapter 合同 | HTTP、SSE、Keychain 和解析协议映射 | WireMock、临时 Keychain Account |
 | 数据库 | 迁移、事务、FTS、崩溃恢复 | 临时 SQLite |
 | React | Reducer、双语块、云解析设置 | Vitest、Testing Library |
-| UI 主流程 | 导入、自动解析、阅读、纠错 | Playwright + Fake Core Bridge |
+| UI 主流程 | 导入、自动解析、双语阅读、选区聊天和引用跳转 | Playwright + Fake Core Bridge |
 | 原生发布 | 打包、签名、文件权限和真实 PDF.js | 签名构建 Smoke Test |
 
 ### 29.2 ReadingSession Interface 测试
@@ -2736,7 +2920,7 @@ Domain 不依赖 Tauri、SQLx、reqwest 或 React。
 2. 自动云解析关闭或未配置时 Cloud Adapter 收不到 PDF 字节。
 3. Parse Operation 固定使用创建时的 Provider Profile 与 Endpoint Fingerprint。
 4. 同一 `commandId` 不产生重复远端请求。
-5. 状态过期的纠正命令被拒绝。
+5. 状态过期的 Selection Context 被拒绝。
 6. Cloud 上传在支持幂等键时安全重试。
 7. 不支持幂等查询的模糊失败进入 `status_unknown`。
 8. Cloud 失败后本地文本提取成功。
@@ -2751,13 +2935,19 @@ Domain 不依赖 Tauri、SQLx、reqwest 或 React。
 17. 401 不自动重试。
 18. Context Error 触发批次减半。
 19. 已提交块在进程重启后不重复请求。
-20. 新译法偏好使匹配的预取块失效。
-21. 不匹配的章节缓存保持有效。
-22. 清除偏好不删除用户确认的当前译文。
-23. 事件 Sequence 严格递增。
-24. Channel 断开后重新 `open` 可由 Snapshot 恢复。
-25. 取消不会删除已提交块。
-26. 删除书架记录不会删除源 PDF。
+20. 选区偏移、文本或 Source Digest 变化时发送被拒绝。
+21. Core 从 Block ID 自行取得对应原文，不能信任 UI 伪造的原文。
+22. Chat 发送前持久化 User Message 和 queued Assistant Message。
+23. 取消保留部分回答并持久化为 `cancelled`。
+24. 重试创建新的 Assistant Message，不重复创建 User Message。
+25. 未知 Citation ID 不产生可点击引用。
+26. 引用只能定位到当前 Document 中实际发送过的块。
+27. 重开论文恢复 Reading Conversation，不自动重发失败消息。
+28. Chat 操作前后 Translation Row 和缓存键完全不变。
+29. 事件 Sequence 严格递增。
+30. Channel 断开后重新 `open` 可由 Snapshot 恢复。
+31. 取消不会删除已提交翻译块。
+32. 删除书架记录不会删除源 PDF。
 
 ### 29.3 Adapter 合同测试
 
@@ -2782,6 +2972,10 @@ OpenAI-compatible：
 - 缺失 `/v1/models`。
 - 手动模型 ID。
 - 非标准错误 Body。
+- Reading Chat 文本增量。
+- Citation Marker 跨 SSE Chunk。
+- 未知和损坏 Citation Marker。
+- Chat 取消与 inactivity timeout。
 
 ### 29.4 PDF Fixture
 
@@ -2817,15 +3011,29 @@ OpenAI-compatible：
 | 人工忠实度评分 | 4.0/5 以上 |
 | 明显增译或省略比例 | 1% 以下 |
 
-### 29.6 性能基准
+### 29.6 Reading Assistant 质量评估
+
+使用公开许可或合成的选区问题集，覆盖术语、复杂句、公式、表格和论证关系：
+
+| 指标 | 发布门槛 |
+|---|---:|
+| Selection Context 文本与活动译文一致率 | 100% |
+| 对应原文块关联正确率 | 100% |
+| 可点击引用指向正确块的比例 | 100% |
+| 需要引用的问题中至少返回一个合法引用 | 95% 以上 |
+| 跨 Document 引用或上下文泄漏 | 0 |
+| Chat 操作导致 Translation Row 变化 | 0 |
+| 人工解释有帮助评分 | 4.0/5 以上 |
+
+### 29.7 性能基准
 
 - 20 篇典型论文运行冷缓存流程。
 - 每篇至少运行 3 次。
-- 分别记录上传、Cloud 处理、下载、规范化和翻译耗时。
+- 分别记录上传、Cloud 处理、下载、规范化、翻译和 Reading Assistant 首次输出耗时。
 - TFRBC 使用 P50、P75、P95 报告。
 - Provider 本身超过 10 分钟的异常样本单独标记，但不能从失败率中删除。
 
-### 29.7 AI 自主开发的 Live MinerU 边界
+### 29.8 AI 自主开发的 Live Provider 边界
 
 - 项目所有者通过本机 Keychain 或 CI Secret 提供开发/测试 API Key。
 - 开发 Key 存放于 macOS Keychain，Service 为 `com.atlasreader.providers`，
@@ -2838,6 +3046,8 @@ OpenAI-compatible：
 - 默认测试使用 `ScriptedCloudParserAdapter` 和 WireMock，不产生真实费用。
 - Live 测试只使用 `fixtures/pdf/manifest.json` 中声明为公开许可或合成的 PDF。
 - Live 测试命令必须显式设置 `ATLAS_LIVE_MINERU=1`，但设置完成后 AI 不需要为每个 Fixture 再请求上传批准。
+- Reading Assistant Live 测试必须显式设置 `ATLAS_LIVE_READING_CHAT=1`，只使用合成选区和问题，
+  不发送真实论文正文或已有用户对话。
 - 单次 Live 测试最多上传 3 篇、合计 50 MB，串行执行，并在 10 分钟后停止。
 - 每个 Pull Request 不运行 Live 测试；只在 Adapter 变更、发布候选和定时兼容性检查时运行。
 - 测试 Key 应使用独立账户、最低必要权限、速率限制和费用上限，并支持随时轮换。
@@ -3014,22 +3224,25 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
 - 合成 Provider、HTTP、SQLite、恢复、取消、缓存、预取、Reader UI 与完整工作区质量门槛均有
   自动化回归覆盖。真实 Provider 合同测试保持显式门控，不进入默认离线套件。
 
-### 31.5 Phase 4：解释与纠错，2 周
+### 31.5 Phase 4：Reading Assistant，2 周
 
 交付：
 
-- 选中解释。
-- 重译与替换确认。
-- 更换译法。
-- 隐式偏好记忆和精确检索。
-- 受影响缓存局部失效。
-- 原文、译文和双语复制。
+- 中文译文文本选择与 Selection Context 卡片。
+- Core 侧选区校验和上下文组装。
+- 左侧流式 Reading Assistant。
+- 每篇论文至多一个本地持久 Reading Conversation，在首条消息时创建。
+- 回答取消、失败重试和崩溃恢复。
+- Citation Marker 校验、块定位和 PDF 页跳转。
+- 对话请求预览与本地清理。
 
 退出条件：
 
-- 偏好可影响后续章节。
-- 偏好外发预览准确。
-- 无显式术语表仍能完成纠错主流程。
+- 选中译文后可以在左侧完成一次连续追问。
+- 重开论文后对话、选区上下文和引用可恢复。
+- 取消与重试不会重复 User Message 或修改 Translation。
+- 每个可点击引用都能定位到当前论文中实际发送过的块。
+- 请求预览准确显示选区、上下文块数和会话轮数。
 
 ### 31.6 Phase 5：硬化与 Alpha，2 周
 
@@ -3074,20 +3287,21 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
 9. 原文与译文按 Canonical Block 对齐。
 10. 公式和引用保护标记通过率达到发布门槛。
 11. 模型输出无效时只影响对应块。
-12. 用户可以解释术语、句子和公式。
-13. 用户可以重译并接受替换。
-14. 用户可以指定译法并影响后续章节。
-15. 产品不展示独立术语表管理界面。
-16. 产品只预取下一章节。
-17. 用户可以复制原文、译文和双语内容。
-18. 关闭并重开后恢复章节和阅读位置。
-19. 崩溃后已完成块不重复请求。
-20. API Key 只保存在 Keychain。
-21. 日志不含密钥、完整正文、完整译文和绝对路径。
-22. 删除书架记录不会删除用户原始 PDF。
-23. PDF 文件变化后旧任务和缓存不再有效。
-24. 远端 HTTP Endpoint 被拒绝，本机回环 HTTP 可配置。
-25. 签名和 Notarization 验证通过。
+12. 用户可以选中中文译文并在左侧 Reading Assistant 连续追问。
+13. Selection Context 自动关联对应原文、章节和页码。
+14. Assistant 回答可以通过合法引用定位回块或 PDF 页。
+15. 聊天发送、取消、重试和清理都不会修改译文。
+16. 每篇论文的 Reading Conversation 在关闭并重开后恢复。
+17. 产品只预取下一章节。
+18. 用户可以复制原文、译文和双语内容。
+19. 关闭并重开后恢复章节和阅读位置。
+20. 崩溃后已完成翻译块和 Chat Message 不重复请求。
+21. API Key 只保存在 Keychain。
+22. 日志不含密钥、完整正文、完整译文、用户问题、Chat 回答和绝对路径。
+23. 删除书架记录不会删除用户原始 PDF。
+24. PDF 文件变化后旧任务和缓存不再有效。
+25. 远端 HTTP Endpoint 被拒绝，本机回环 HTTP 可配置。
+26. 签名和 Notarization 验证通过。
 
 ---
 
@@ -3103,7 +3317,9 @@ MVP 不自动上传分析数据。通过本地指标和用户主动参与的研�
 | 首篇论文完成一次章节精读的用户比例 | 70% 以上 |
 | 章节翻译完成率 | 95% 以上 |
 | 有效结构块比例 | 99% 以上 |
-| 用户纠正后后续命中率 | 90% 以上 |
+| Selection Context 校验成功率 | 99.5% 以上 |
+| 合法 Chat 引用定位成功率 | 99% 以上 |
+| Reading Assistant 首次输出 | P75 小于 5 秒 |
 | 已缓存章节打开成功率 | 99.5% 以上 |
 | 用户正确理解自动云解析会上传完整 PDF 的比例 | 95% 以上 |
 | Alpha 周留存 | 35% 以上 |
@@ -3128,7 +3344,9 @@ MVP 不自动上传分析数据。通过本地指标和用户主动参与的研�
 | OpenAI-compatible 差异大 | 模型连接不稳定 | 保守协议子集、手动模型 ID、Adapter 合同测试 |
 | 模型破坏结构 | 双语错位 | 保护标记、JSON Lines、逐块校验和局部修复 |
 | 模型费用因预取增长 | 用户成本不可控 | 只预取下一章、并发 1、前台可见、可取消 |
-| 偏好导致错误泛化 | 后续译文错误 | MVP 仅精确匹配，不使用模糊 Embedding |
+| Chat 回答脱离选区 | 误导阅读 | Core 组装上下文、限制会话窗口、回答引用回块 |
+| 模型伪造引用 | 定位到错误内容 | 随机 Citation ID、允许列表校验、未知引用不可点击 |
+| 对话历史过长 | 成本和隐私扩大 | 只发送最近会话窗口，完整历史只在本机保存 |
 | 复杂表格无法翻译 | 阅读体验不一致 | 结构化表格逐 Cell；否则保留原图和译图注 |
 | PDF.js 大文档占用过高 | 卡顿或崩溃 | 页面虚拟化、限制并发渲染、缩略图缓存 |
 | SQLite 或缓存损坏 | 无法恢复阅读状态 | WAL、事务、迁移备份、可重建缓存分层 |
@@ -3156,14 +3374,14 @@ MVP 不自动上传分析数据。通过本地指标和用户主动参与的研�
 ### P1：阅读增强
 
 - Local MinerU 可选安装。
-- 显式术语偏好查看和编辑。
+- 译文修正、重译和用户术语偏好。
 - PDF 高亮与批注。
 - 双语 Markdown 导出。
 - 更多源语言和目标语言。
 
 ### P2：知识工作流
 
-- 带原文引用的单篇论文问答。
+- 无需选区的整篇论文检索问答。
 - 研究笔记。
 - Zotero 单向导入。
 - Obsidian 导出。
@@ -3192,7 +3410,8 @@ Tauri 2
 + OpenAI-compatible streaming translation
 + protected formula and citation atoms
 + block-level validation and cache
-+ hidden per-document wording preferences
++ selection-grounded Reading Assistant
++ persistent document conversation and validated citations
 + macOS Keychain
 + signed and notarized arm64 DMG
 ```
@@ -3206,8 +3425,8 @@ Tauri 2
 + 按章节中英对照
 + 下一章节预取
 + 公式、引用和结构保护
-+ 选中解释、重译与更换译法
-+ 隐式译法偏好
++ 选中译文进入左侧 Reading Assistant
++ 文档级持久对话、取消、重试和引用定位
 + 原文、译文和双语复制
 + OpenAI-compatible 用户自有模型
 + 本地缓存与崩溃恢复

@@ -4,8 +4,9 @@ import type { DocumentId } from "./DocumentId";
 import type { JobId } from "./JobId";
 import type { ParseState } from "./ParseState";
 import type { ProviderStatusSnapshot } from "./ProviderStatusSnapshot";
+import type { ReadingAssistantSnapshot } from "./ReadingAssistantSnapshot";
 import type { SessionId } from "./SessionId";
 import type { SessionLifecycle } from "./SessionLifecycle";
 import type { TranslationSnapshot } from "./TranslationSnapshot";
 
-export type SessionSnapshot = { schemaVersion: number, sessionId: SessionId, documentId: DocumentId, revision: number, lifecycle: SessionLifecycle, parseState: ParseState, activeChapterId: ChapterId | null, activeJobIds: Array<JobId>, providerStatus: ProviderStatusSnapshot, translation: TranslationSnapshot, };
+export type SessionSnapshot = { schemaVersion: number, sessionId: SessionId, documentId: DocumentId, revision: number, lifecycle: SessionLifecycle, parseState: ParseState, activeChapterId: ChapterId | null, activeJobIds: Array<JobId>, providerStatus: ProviderStatusSnapshot, translation: TranslationSnapshot, readingAssistant: ReadingAssistantSnapshot, };

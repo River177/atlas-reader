@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    AtlasError, CanonicalDocument, ChapterId, CommandId, DocumentId, JobId, SessionId,
-    TranslationSnapshot,
+    AtlasError, CanonicalDocument, ChapterId, CommandId, DocumentId, JobId,
+    ReadingAssistantCommand, ReadingAssistantSnapshot, SessionId, TranslationSnapshot,
 };
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -133,6 +133,7 @@ pub struct SessionSnapshot {
     pub active_job_ids: Vec<JobId>,
     pub provider_status: ProviderStatusSnapshot,
     pub translation: TranslationSnapshot,
+    pub reading_assistant: ReadingAssistantSnapshot,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -162,15 +163,13 @@ pub enum ReadingCommand {
         #[ts(rename = "chapterId")]
         chapter_id: ChapterId,
     },
-    ClearDocumentPreferences {
-        #[serde(rename = "documentId")]
-        #[ts(rename = "documentId")]
-        document_id: DocumentId,
-    },
     RetryTranslation {
         #[serde(rename = "chapterId")]
         #[ts(rename = "chapterId")]
         chapter_id: ChapterId,
+    },
+    ReadingAssistant {
+        command: ReadingAssistantCommand,
     },
 }
 
@@ -192,4 +191,34 @@ pub struct CommandReceipt {
     pub revision: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rejection: Option<AtlasError>,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{BlockId, ReadingMessageId, SelectionContextInput};
+
+    use super::*;
+
+    #[test]
+    fn reading_assistant_stays_nested_behind_one_session_command_variant() {
+        let encoded = serde_json::to_value(ReadingCommand::ReadingAssistant {
+            command: ReadingAssistantCommand::SendMessage {
+                user_message_id: ReadingMessageId::from("reader-1"),
+                text: "Explain this claim".to_owned(),
+                selection: Some(SelectionContextInput {
+                    block_id: BlockId::from("block-1"),
+                    source_digest: "digest".to_owned(),
+                    start_utf16: 0,
+                    end_utf16: 4,
+                    selected_text: "该结论".to_owned(),
+                }),
+            },
+        })
+        .expect("command should encode");
+
+        assert_eq!(encoded["type"], "reading_assistant");
+        assert_eq!(encoded["command"]["type"], "send_message");
+        assert_eq!(encoded["command"]["userMessageId"], "reader-1");
+        assert_eq!(encoded["command"]["selection"]["endUtf16"], 4);
+    }
 }

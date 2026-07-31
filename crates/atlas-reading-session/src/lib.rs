@@ -239,7 +239,7 @@ impl ReadingSessionModule for DefaultReadingSession {
 
         let session_id = SessionId::new(Uuid::new_v4().to_string());
         let snapshot = SessionSnapshot {
-            schema_version: 2,
+            schema_version: 3,
             session_id: session_id.clone(),
             document_id: input.document_id.clone(),
             revision: 0,
@@ -249,6 +249,7 @@ impl ReadingSessionModule for DefaultReadingSession {
             active_job_ids: Vec::new(),
             provider_status,
             translation: TranslationSnapshot::default(),
+            reading_assistant: atlas_domain::ReadingAssistantSnapshot::default(),
         };
         registry
             .sessions_by_document
@@ -352,9 +353,9 @@ impl ReadingSessionModule for DefaultReadingSession {
                         })
                         .await
                 }
-                ReadingCommand::ClearDocumentPreferences { .. } => {
-                    Ok(candidate.translation.clone())
-                }
+                ReadingCommand::ReadingAssistant { .. } => Err(
+                    AtlasError::provider_not_configured("Reading Assistant is not available yet"),
+                ),
             }
         } else {
             Ok(candidate.translation.clone())
@@ -471,13 +472,11 @@ fn apply_command(snapshot: &mut SessionSnapshot, command: ReadingCommand) -> Opt
             snapshot.active_chapter_id = Some(chapter_id);
             None
         }
-        ReadingCommand::ClearDocumentPreferences { document_id } => (document_id
-            != snapshot.document_id)
-            .then(|| AtlasError::invalid_input("document does not belong to this session")),
         ReadingCommand::RetryTranslation { chapter_id } => {
             snapshot.active_chapter_id = Some(chapter_id);
             None
         }
+        ReadingCommand::ReadingAssistant { .. } => None,
     }
 }
 
@@ -487,7 +486,7 @@ mod tests {
 
     use atlas_domain::{
         CanonicalChapter, CanonicalDocument, ChapterId, ChapterRole, ParseSnapshot,
-        ParsedDocumentView, ParserIdentity, ProviderState,
+        ParsedDocumentView, ParserIdentity, ProviderState, ReadingAssistantCommand,
     };
     use atlas_translation::{EnsureTranslationInput, RetryTranslationInput};
 
@@ -985,8 +984,8 @@ mod tests {
                 &opened.session_id,
                 CommandId::from("command-1"),
                 Some(10),
-                ReadingCommand::ClearDocumentPreferences {
-                    document_id: DocumentId::from("document-1"),
+                ReadingCommand::ReadingAssistant {
+                    command: ReadingAssistantCommand::ClearConversation,
                 },
             )
             .await
@@ -996,6 +995,45 @@ mod tests {
         assert_eq!(
             receipt.rejection.expect("rejection should exist").code,
             atlas_domain::AtlasErrorCode::StaleRevision
+        );
+    }
+
+    #[tokio::test]
+    async fn assistant_contract_is_rejected_without_mutating_session_until_module_is_wired() {
+        let module = module();
+        let opened = module
+            .open(OpenSessionInput {
+                document_id: DocumentId::from("document-1"),
+                initial_chapter_id: None,
+            })
+            .await
+            .expect("session should open");
+
+        let receipt = module
+            .dispatch(
+                &opened.session_id,
+                CommandId::from("assistant-command"),
+                Some(0),
+                ReadingCommand::ReadingAssistant {
+                    command: ReadingAssistantCommand::ClearConversation,
+                },
+            )
+            .await
+            .expect("assistant command should return a receipt");
+
+        assert_eq!(receipt.status, CommandStatus::Rejected);
+        assert_eq!(receipt.revision, 0);
+        assert_eq!(
+            receipt.rejection.expect("rejection should exist").code,
+            atlas_domain::AtlasErrorCode::ProviderNotConfigured
+        );
+        assert_eq!(
+            module
+                .snapshot(&opened.session_id)
+                .await
+                .expect("snapshot should remain readable")
+                .reading_assistant,
+            atlas_domain::ReadingAssistantSnapshot::default()
         );
     }
 
@@ -1051,8 +1089,8 @@ mod tests {
                 &first.session_id,
                 CommandId::from("command-1"),
                 Some(0),
-                ReadingCommand::ClearDocumentPreferences {
-                    document_id: DocumentId::from("document-1"),
+                ReadingCommand::FocusChapter {
+                    chapter_id: ChapterId::from("chapter-1"),
                 },
             )
             .await

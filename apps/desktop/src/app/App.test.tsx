@@ -122,6 +122,16 @@ function parseSnapshot(
   };
 }
 
+function emptyReadingAssistant(): SessionSnapshot["readingAssistant"] {
+  return {
+    schemaVersion: 1,
+    conversationId: null,
+    messages: [],
+    activeAssistantMessageId: null,
+    latestSelection: null,
+  };
+}
+
 class FakePdfViewer implements PdfViewerModule {
   input: OpenPdfViewerInput | undefined;
   state: PdfViewerState = {
@@ -389,7 +399,7 @@ describe("App", () => {
       document: canonicalDocument(),
     });
     const introductionSnapshot = {
-      schemaVersion: 1,
+      schemaVersion: 3,
       sessionId: "session-1",
       documentId: "document-1",
       revision: 0,
@@ -428,6 +438,7 @@ describe("App", () => {
           ],
         },
       },
+      readingAssistant: emptyReadingAssistant(),
     } satisfies SessionSnapshot;
     vi.mocked(testBridge.getReadingSessionSnapshot)
       .mockResolvedValueOnce(introductionSnapshot)
@@ -490,7 +501,7 @@ describe("App", () => {
       document: canonicalDocument(),
     });
     const snapshot = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       sessionId: "session-1",
       documentId: "document-1",
       revision: 0,
@@ -509,6 +520,7 @@ describe("App", () => {
         activeChapter: null,
         prefetchedChapterId: null,
       },
+      readingAssistant: emptyReadingAssistant(),
     };
     vi.mocked(testBridge.getReadingSessionSnapshot).mockResolvedValue(snapshot);
     vi.mocked(testBridge.dispatchReadingCommand).mockResolvedValue({
@@ -558,7 +570,7 @@ describe("App", () => {
       document: canonicalDocument(),
     });
     const activeSnapshot = (chapterId: string, revision: number): SessionSnapshot => ({
-      schemaVersion: 2,
+      schemaVersion: 3,
       sessionId: "session-1",
       documentId: "document-1",
       revision,
@@ -586,6 +598,7 @@ describe("App", () => {
           blocks: [],
         },
       },
+      readingAssistant: emptyReadingAssistant(),
     });
     const methodFocused = { current: false };
     vi.mocked(testBridge.getReadingSessionSnapshot).mockImplementation(async () =>
@@ -642,7 +655,7 @@ describe("App", () => {
       document: canonicalDocument(),
     });
     const snapshot: SessionSnapshot = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       sessionId: "session-1",
       documentId: "document-1",
       revision: 1,
@@ -670,6 +683,7 @@ describe("App", () => {
           blocks: [],
         },
       },
+      readingAssistant: emptyReadingAssistant(),
     };
     vi.mocked(testBridge.getReadingSessionSnapshot).mockResolvedValue(snapshot);
     render(<App bridge={testBridge} viewerFactory={async () => new FakePdfViewer()} />);

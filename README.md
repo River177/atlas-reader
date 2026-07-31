@@ -4,8 +4,10 @@ Atlas Reader is a macOS bilingual academic PDF reader for Chinese researchers re
 papers.
 
 The product focuses on chapter-based English–Chinese close reading, preserving document structure,
-formulas, citations, and page relationships. Cloud MinerU provides document parsing with a
-user-supplied API key, while translation uses a user-configured OpenAI-compatible endpoint.
+formulas, citations, and page relationships. Selected translated text can ground a persistent
+document-scoped Reading Assistant without changing the translation. Cloud MinerU provides document
+parsing with a user-supplied API key, while translation and chat use a user-configured
+OpenAI-compatible endpoint.
 
 ## Status
 
@@ -51,8 +53,9 @@ artifacts, and local PDF text remain readable. Persisted cloud parse work resume
 fingerprint; changing the endpoint turns old work into an explicit re-upload choice rather than
 sending the current credential to the previous host.
 
-The next vertical slice is inline explanation and translation correction with implicit wording
-preferences.
+The next vertical slice is a document-scoped Reading Assistant: select translated text, attach its
+aligned source context to the left chat panel, stream an explanation, persist the conversation
+locally, and navigate validated citations back to the paper. Chat never modifies translations.
 
 ### Cloud MinerU protocol verification
 
@@ -140,7 +143,7 @@ keeps a stable identity across launches and upgrades, users are prompted at most
 - Automatic Cloud MinerU parsing with a user-supplied API key
 - Chapter-based bilingual reading
 - Formula, citation, and block-structure preservation
-- Inline explanation, retranslation, and preferred wording
+- Selection-grounded Reading Assistant with persistent document conversations
 - Local caches, reading-state recovery, and macOS Keychain integration
 
 ## Documentation

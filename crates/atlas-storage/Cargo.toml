@@ -12,6 +12,7 @@ atlas-document-reader = { path = "../atlas-document-reader" }
 atlas-library = { path = "../atlas-library" }
 atlas-parse = { path = "../atlas-parse" }
 atlas-provider-settings = { path = "../atlas-provider-settings" }
+atlas-reading-assistant = { path = "../atlas-reading-assistant" }
 atlas-translation = { path = "../atlas-translation" }
 hex = "0.4.3"
 serde_json.workspace = true

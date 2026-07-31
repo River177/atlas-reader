@@ -8,6 +8,7 @@ members = [
   "crates/atlas-library",
   "crates/atlas-parse",
   "crates/atlas-provider-settings",
+  "crates/atlas-reading-assistant",
   "crates/atlas-reading-session",
   "crates/atlas-storage",
   "crates/atlas-translation",

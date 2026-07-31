@@ -1,4 +1,5 @@
 mod parse_store;
+mod reading_assistant_store;
 mod translation_store;
 
 use std::{path::Path, str::FromStr};
@@ -21,6 +22,7 @@ use sqlx::{
 };
 
 pub use parse_store::SqliteParseStore;
+pub use reading_assistant_store::SqliteReadingAssistantStore;
 pub use translation_store::SqliteTranslationStore;
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");

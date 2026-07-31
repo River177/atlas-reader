@@ -267,6 +267,7 @@ dependencies = [
  "atlas-domain",
  "atlas-parse",
  "atlas-provider-settings",
+ "atlas-reading-assistant",
  "atlas-reading-session",
  "atlas-translation",
  "httpdate",
@@ -376,6 +377,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-reading-assistant"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "atlas-domain",
+ "atlas-translation",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "atlas-reading-session"
 version = "0.1.0"
 dependencies = [
@@ -397,6 +411,7 @@ dependencies = [
  "atlas-library",
  "atlas-parse",
  "atlas-provider-settings",
+ "atlas-reading-assistant",
  "atlas-translation",
  "hex",
  "lopdf 0.44.0",

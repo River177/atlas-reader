@@ -10,6 +10,7 @@ async-trait.workspace = true
 atlas-domain = { path = "../atlas-domain" }
 atlas-parse = { path = "../atlas-parse" }
 atlas-provider-settings = { path = "../atlas-provider-settings" }
+atlas-reading-assistant = { path = "../atlas-reading-assistant" }
 atlas-reading-session = { path = "../atlas-reading-session" }
 atlas-translation = { path = "../atlas-translation" }
 keyring = "4.1.5"

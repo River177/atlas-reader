@@ -2281,23 +2281,30 @@ CREATE TABLE reading_messages (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL
     REFERENCES reading_conversations(id) ON DELETE CASCADE,
-  role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+  role TEXT NOT NULL CHECK (role IN ('reader', 'assistant')),
   state TEXT NOT NULL CHECK (
     state IN ('queued', 'streaming', 'ready', 'failed', 'cancelled')
   ),
   text TEXT NOT NULL DEFAULT '',
   selection_context_json TEXT,
+  responding_to_message_id TEXT REFERENCES reading_messages(id) ON DELETE CASCADE,
+  retry_of_message_id TEXT REFERENCES reading_messages(id) ON DELETE SET NULL,
   endpoint_fingerprint TEXT,
   model_id TEXT,
-  retry_of_message_id TEXT REFERENCES reading_messages(id) ON DELETE SET NULL,
   error_code TEXT,
   error_safe_json TEXT,
+  sequence INTEGER NOT NULL CHECK (sequence >= 0),
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  UNIQUE (conversation_id, sequence)
 );
 
 CREATE INDEX reading_messages_conversation_idx
-  ON reading_messages(conversation_id, created_at, id);
+  ON reading_messages(conversation_id, sequence);
+
+CREATE UNIQUE INDEX reading_messages_one_active_assistant_idx
+  ON reading_messages(conversation_id)
+  WHERE role = 'assistant' AND state IN ('queued', 'streaming');
 
 CREATE TABLE reading_citations (
   id TEXT PRIMARY KEY,
@@ -3243,6 +3250,18 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
 - 取消与重试不会重复 User Message 或修改 Translation。
 - 每个可点击引用都能定位到当前论文中实际发送过的块。
 - 请求预览准确显示选区、上下文块数和会话轮数。
+
+进展（2026-07-31）：**基础 Module 已完成，主流程尚未接线**。
+
+- Rust 与生成 TypeScript 合同已完成：嵌套 Reading Assistant Command、UTF-16 Selection
+  Input、Reader/Assistant Message 判别联合、重试关系、Citation Target 和 Session schema v3。
+- `SelectionContextAssembler` 已完成：Core 校验活动译文、Source Digest、UTF-16 偏移和选中文本，
+  派生原文、章节、页码，并按完整序列化载荷预算选择同章邻近块。
+- migration 0006 与 SQLite Store 已完成：原子入队、单活动回答、流式 checkpoint、终态 fencing、
+  最新失败尝试重试、Citation 外键、崩溃恢复和级联清空。
+- OpenAI-compatible Reading Assistant Adapter 已完成：复用 Phase 3 HTTP/SSE Transport，线性解析
+  Citation Marker，剥离未知、重复、损坏和超长标记，并保持取消与 finish 语义。
+- 待完成：深 Reading Assistant Module、ReadingSession/Tauri 接线、左侧 Chat UI 和 Phase 4 全量验证。
 
 ### 31.6 Phase 5：硬化与 Alpha，2 周
 

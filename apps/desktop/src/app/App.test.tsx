@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest";
 import type {
   CanonicalDocument,
+  CommandReceipt,
   DocumentSummary,
   ImportPdfResult,
   ParseSnapshot,
@@ -132,6 +133,53 @@ function emptyReadingAssistant(): SessionSnapshot["readingAssistant"] {
   };
 }
 
+function readyReaderSession(
+  readingAssistant: SessionSnapshot["readingAssistant"] = emptyReadingAssistant(),
+): SessionSnapshot {
+  return {
+    schemaVersion: 3,
+    sessionId: "session-1",
+    documentId: "document-1",
+    revision: 0,
+    lifecycle: "ready",
+    parseState: "ready",
+    activeChapterId: "chapter-introduction",
+    activeJobIds: [],
+    providerStatus: {
+      mineru: "ready",
+      translation: "ready",
+      translationModel: "test-model",
+    },
+    translation: {
+      targetLocale: "zh-CN",
+      modelId: "test-model",
+      prefetchedChapterId: null,
+      activeChapter: {
+        chapterId: "chapter-introduction",
+        state: "complete",
+        progress: 1,
+        jobId: "translation-job-1",
+        jobActive: false,
+        prefetched: false,
+        safeMessage: null,
+        blocks: [
+          {
+            blockId: "block-introduction",
+            sourceDigest: "intro-digest",
+            state: "ready",
+            target: {
+              plainText: "检索系统连接论文。",
+              atoms: [{ type: "text", value: "检索系统连接论文。" }],
+            },
+            safeMessage: null,
+          },
+        ],
+      },
+    },
+    readingAssistant,
+  };
+}
+
 class FakePdfViewer implements PdfViewerModule {
   input: OpenPdfViewerInput | undefined;
   state: PdfViewerState = {
@@ -185,6 +233,11 @@ class FakePdfViewer implements PdfViewerModule {
   emitPosition(position: typeof this.position) {
     this.position = position;
     this.input?.onPositionChange(position);
+  }
+
+  emitState(state: Partial<PdfViewerState>) {
+    this.state = { ...this.state, ...state };
+    this.input?.onStateChange(this.state);
   }
 }
 
@@ -479,6 +532,430 @@ describe("App", () => {
       "artifact-operation-1",
       expect.stringMatching(/^images\/[a-f0-9]{64}\.png$/),
     );
+  });
+
+  it("turns a translated-text selection into a Reading Assistant command", async () => {
+    const testBridge = bridge();
+    const paper = document();
+    let resolveAssistant: ((receipt: CommandReceipt) => void) | undefined;
+    vi.mocked(testBridge.queryLibrary).mockResolvedValue({ items: [paper], nextCursor: null });
+    vi.mocked(testBridge.openReader).mockResolvedValue({
+      document: paper,
+      sourceToken: "reader-token",
+      sourceUrl: "atlas-reader://localhost/pdf/reader-token",
+      position: {
+        page: 1,
+        pageOffsetRatio: 0,
+        scaleValue: "page-width",
+        updatedAt: 1,
+      },
+    });
+    vi.mocked(testBridge.getParsedDocument).mockResolvedValue({
+      parse: parseSnapshot("ready"),
+      document: canonicalDocument(),
+    });
+    const session = readyReaderSession();
+    vi.mocked(testBridge.getReadingSessionSnapshot)
+      .mockResolvedValueOnce(session)
+      .mockRejectedValueOnce(new Error("Snapshot refresh unavailable"))
+      .mockResolvedValue(session);
+    vi.mocked(testBridge.dispatchReadingCommand).mockImplementation(
+      () =>
+        new Promise<CommandReceipt>((resolve) => {
+          resolveAssistant = resolve;
+        }),
+    );
+    render(<App bridge={testBridge} viewerFactory={async () => new FakePdfViewer()} />);
+    await screen.findByText("Atlas Retrieval");
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Bilingual" }));
+    const translated = await screen.findByText("检索系统连接论文。");
+    const textNode = translated.firstChild;
+    if (!textNode) {
+      throw new Error("translated text node is missing");
+    }
+    const range = window.document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 4);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    fireEvent(window.document, new Event("selectionchange"));
+
+    expect(await screen.findByText("Reading Assistant")).toBeInTheDocument();
+    expect(screen.getAllByText("检索系统")).toHaveLength(2);
+    await waitFor(() =>
+      expect(window.document.querySelector(".reading-selection-highlight")).toHaveTextContent(
+        "检索系统",
+      ),
+    );
+    fireEvent.change(screen.getByLabelText("Ask about this selection"), {
+      target: { value: "为什么这一点重要？" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+
+    await waitFor(() => {
+      expect(testBridge.dispatchReadingCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-1",
+          command: {
+            type: "reading_assistant",
+            command: {
+              type: "send_message",
+              userMessageId: expect.stringMatching(/^reader-message-/),
+              text: "为什么这一点重要？",
+              selection: {
+                blockId: "block-introduction",
+                sourceDigest: "intro-digest",
+                startUtf16: 0,
+                endUtf16: 4,
+                selectedText: "检索系统",
+              },
+            },
+          },
+        }),
+      );
+    });
+    const nextRange = window.document.createRange();
+    const remainingTextNode = window.document.querySelector(
+      '[data-reading-target-block] [data-plain-start="0"]',
+    )?.lastChild;
+    if (!remainingTextNode) {
+      throw new Error("remaining translated text node is missing");
+    }
+    nextRange.setStart(remainingTextNode, 0);
+    nextRange.setEnd(remainingTextNode, 2);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(nextRange);
+    fireEvent(window.document, new Event("selectionchange"));
+    expect(await screen.findAllByText("连接")).toHaveLength(2);
+    await waitFor(() =>
+      expect(window.document.querySelector(".reading-selection-highlight")).toHaveTextContent(
+        "连接",
+      ),
+    );
+    act(() =>
+      resolveAssistant?.({
+        commandId: "assistant-command",
+        status: "accepted",
+        revision: 1,
+        rejection: null,
+      }),
+    );
+    await waitFor(() => {
+      expect(screen.getByLabelText("Ask about this selection")).toHaveValue("");
+      expect(screen.getAllByText("连接")).toHaveLength(2);
+      expect(window.document.querySelector(".reading-selection-highlight")).toHaveTextContent(
+        "连接",
+      );
+    });
+  });
+
+  it("serializes assistant commands behind chapter focus revision changes", async () => {
+    const testBridge = bridge();
+    const paper = document();
+    let focused = false;
+    let resolveFocus: (() => void) | undefined;
+    vi.mocked(testBridge.queryLibrary).mockResolvedValue({ items: [paper], nextCursor: null });
+    vi.mocked(testBridge.openReader).mockResolvedValue({
+      document: paper,
+      sourceToken: "reader-token",
+      sourceUrl: "atlas-reader://localhost/pdf/reader-token",
+      position: {
+        page: 1,
+        pageOffsetRatio: 0,
+        scaleValue: "page-width",
+        updatedAt: 1,
+      },
+    });
+    vi.mocked(testBridge.getParsedDocument).mockResolvedValue({
+      parse: parseSnapshot("ready"),
+      document: canonicalDocument(),
+    });
+    vi.mocked(testBridge.getReadingSessionSnapshot).mockImplementation(async () => ({
+      ...readyReaderSession(),
+      revision: focused ? 1 : 0,
+      activeChapterId: focused ? "chapter-method" : "chapter-introduction",
+      translation: focused
+        ? { ...readyReaderSession().translation, activeChapter: null }
+        : readyReaderSession().translation,
+    }));
+    vi.mocked(testBridge.dispatchReadingCommand).mockImplementation((input) => {
+      if (input.command.type === "focus_chapter") {
+        return new Promise<CommandReceipt>((resolve) => {
+          resolveFocus = () => {
+            focused = true;
+            resolve({
+              commandId: input.commandId,
+              status: "accepted",
+              revision: 1,
+              rejection: null,
+            });
+          };
+        });
+      }
+      return Promise.resolve({
+        commandId: input.commandId,
+        status: "accepted",
+        revision: 2,
+        rejection: null,
+      });
+    });
+    render(<App bridge={testBridge} viewerFactory={async () => new FakePdfViewer()} />);
+    await screen.findByText("Atlas Retrieval");
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Bilingual" }));
+    const translated = await screen.findByText("检索系统连接论文。");
+    const textNode = translated.firstChild!;
+    const range = window.document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 4);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    fireEvent.mouseUp(translated.closest(".target-block")!);
+    fireEvent.change(screen.getByLabelText("Ask about this selection"), {
+      target: { value: "这一点与方法有什么关系？" },
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Outline" }));
+    fireEvent.click(screen.getByRole("button", { name: "02Method" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Assistant" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Outline" }));
+    fireEvent.click(screen.getByRole("button", { name: "01Introduction" }));
+
+    await waitFor(() => expect(testBridge.dispatchReadingCommand).toHaveBeenCalledTimes(1));
+    resolveFocus?.();
+    await waitFor(() => {
+      expect(testBridge.dispatchReadingCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedRevision: 1,
+          command: expect.objectContaining({ type: "reading_assistant" }),
+        }),
+      );
+    });
+  });
+
+  it("restores assistant messages and supports citation and cancel actions", async () => {
+    const testBridge = bridge();
+    const paper = document();
+    const viewer = new FakePdfViewer();
+    viewer.state = { ...viewer.state, pageCount: 0 };
+    vi.mocked(testBridge.queryLibrary).mockResolvedValue({ items: [paper], nextCursor: null });
+    vi.mocked(testBridge.openReader).mockResolvedValue({
+      document: paper,
+      sourceToken: "reader-token",
+      sourceUrl: "atlas-reader://localhost/pdf/reader-token",
+      position: {
+        page: 1,
+        pageOffsetRatio: 0,
+        scaleValue: "page-width",
+        updatedAt: 1,
+      },
+    });
+    vi.mocked(testBridge.getParsedDocument).mockResolvedValue({
+      parse: parseSnapshot("ready"),
+      document: canonicalDocument(),
+    });
+    vi.mocked(testBridge.getReadingSessionSnapshot).mockResolvedValue(
+      readyReaderSession({
+        schemaVersion: 1,
+        conversationId: "conversation-1",
+        activeAssistantMessageId: "assistant-streaming",
+        latestSelection: {
+          blockId: "block-introduction",
+          chapterId: "chapter-introduction",
+          pageStart: 1,
+          pageEnd: 1,
+          sourceDigest: "intro-digest",
+          startUtf16: 0,
+          endUtf16: 4,
+          selectedText: "检索系统",
+          alignedSource: "Retrieval systems connect papers.",
+        },
+        messages: [
+          {
+            role: "reader",
+            id: "reader-1",
+            text: "为什么重要？",
+            selectionContext: null,
+            createdAt: 1,
+          },
+          {
+            role: "assistant",
+            id: "assistant-failed",
+            respondingTo: "reader-1",
+            state: "failed",
+            text: "部分回答",
+            citations: [
+              {
+                id: "citation-1",
+                blockId: "block-introduction",
+                chapterId: "chapter-introduction",
+                page: 1,
+                label: "p. 1",
+              },
+            ],
+            retryOfMessageId: null,
+            safeMessage: "The response stopped",
+            createdAt: 2,
+            updatedAt: 3,
+          },
+          {
+            role: "reader",
+            id: "reader-2",
+            text: "有什么限制？",
+            selectionContext: null,
+            createdAt: 3,
+          },
+          {
+            role: "assistant",
+            id: "assistant-complete",
+            respondingTo: "reader-2",
+            state: "ready",
+            text: "回答没有提供论文位置。",
+            citations: [],
+            retryOfMessageId: null,
+            safeMessage: null,
+            createdAt: 3,
+            updatedAt: 4,
+          },
+          {
+            role: "assistant",
+            id: "assistant-streaming",
+            respondingTo: "reader-1",
+            state: "streaming",
+            text: "正在解释",
+            citations: [],
+            retryOfMessageId: "assistant-failed",
+            safeMessage: null,
+            createdAt: 4,
+            updatedAt: 5,
+          },
+        ],
+      }),
+    );
+    vi.mocked(testBridge.dispatchReadingCommand).mockRejectedValueOnce(
+      new Error("Could not stop response"),
+    );
+    render(<App bridge={testBridge} viewerFactory={async () => viewer} />);
+    await screen.findByText("Atlas Retrieval");
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Bilingual" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Assistant" }));
+
+    expect(await screen.findByText("部分回答")).toBeInTheDocument();
+    expect(screen.getByText("No paper location provided.")).toBeInTheDocument();
+    const messageList = window.document.querySelector<HTMLElement>(".assistant-messages");
+    if (!messageList) {
+      throw new Error("assistant message list is missing");
+    }
+    Object.defineProperties(messageList, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 1000 },
+    });
+    messageList.scrollTop = 100;
+    fireEvent.scroll(messageList);
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+    });
+    expect(messageList.scrollTop).toBe(100);
+    fireEvent.click(screen.getByRole("button", { name: "p. 1" }));
+    await waitFor(() => {
+      expect(
+        window.document.querySelector('[data-bilingual-block-id="block-introduction"]'),
+      ).toHaveClass("is-citation-target");
+    });
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not stop response");
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not stop response");
+
+    await waitFor(() => {
+      expect(testBridge.dispatchReadingCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: {
+            type: "reading_assistant",
+            command: {
+              type: "cancel_response",
+              assistantMessageId: "assistant-streaming",
+            },
+          },
+        }),
+      );
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open p. 1 in PDF" }));
+    expect(viewer.setPage).not.toHaveBeenCalled();
+    act(() => viewer.emitState({ pageCount: 12 }));
+    await waitFor(() => expect(viewer.setPage).toHaveBeenCalledWith(1));
+  });
+
+  it("offers retry only for the latest failed assistant attempt", async () => {
+    const testBridge = bridge();
+    const paper = document();
+    vi.mocked(testBridge.queryLibrary).mockResolvedValue({ items: [paper], nextCursor: null });
+    vi.mocked(testBridge.openReader).mockResolvedValue({
+      document: paper,
+      sourceToken: "reader-token",
+      sourceUrl: "atlas-reader://localhost/pdf/reader-token",
+      position: {
+        page: 1,
+        pageOffsetRatio: 0,
+        scaleValue: "page-width",
+        updatedAt: 1,
+      },
+    });
+    vi.mocked(testBridge.getParsedDocument).mockResolvedValue({
+      parse: parseSnapshot("ready"),
+      document: canonicalDocument(),
+    });
+    vi.mocked(testBridge.getReadingSessionSnapshot).mockResolvedValue(
+      readyReaderSession({
+        schemaVersion: 1,
+        conversationId: "conversation-1",
+        activeAssistantMessageId: null,
+        latestSelection: null,
+        messages: [
+          {
+            role: "reader",
+            id: "reader-1",
+            text: "为什么重要？",
+            selectionContext: null,
+            createdAt: 1,
+          },
+          {
+            role: "assistant",
+            id: "assistant-failed",
+            respondingTo: "reader-1",
+            state: "failed",
+            text: "部分回答",
+            citations: [],
+            retryOfMessageId: null,
+            safeMessage: "The response stopped",
+            createdAt: 2,
+            updatedAt: 3,
+          },
+        ],
+      }),
+    );
+    render(<App bridge={testBridge} viewerFactory={async () => new FakePdfViewer()} />);
+    await screen.findByText("Atlas Retrieval");
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Bilingual" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Assistant" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(testBridge.dispatchReadingCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: {
+            type: "reading_assistant",
+            command: { type: "retry_response", userMessageId: "reader-1" },
+          },
+        }),
+      );
+    });
   });
 
   it("restores authoritative chapter focus when a focus command is rejected", async () => {

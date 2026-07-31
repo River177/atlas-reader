@@ -8,7 +8,8 @@ use std::sync::{Arc, PoisonError, RwLock};
 use app_state::AppState;
 use atlas_adapters::{
     HttpConnectionProbe, MacOsKeychainAdapter, MineruCloudHttpAdapter,
-    OpenAiCompatibleTranslationAdapter, ProviderRuntimeAdapter,
+    OpenAiCompatibleReadingAssistantAdapter, OpenAiCompatibleTranslationAdapter,
+    ProviderRuntimeAdapter,
 };
 use atlas_document_reader::{DefaultDocumentReader, ReaderSourceRegistry};
 use atlas_library::DefaultLibraryModule;
@@ -16,10 +17,11 @@ use atlas_parse::{DefaultParseModule, LocalPdfExtractor, ParseModule};
 use atlas_provider_settings::{
     DefaultProviderSettings, EnvironmentSecretOverride, ProviderSettingsStore, SecretStore,
 };
+use atlas_reading_assistant::{DefaultReadingAssistantModule, ReadingAssistantModule};
 use atlas_reading_session::DefaultReadingSession;
 use atlas_storage::{
     AtlasDatabase, SqliteDocumentStore, SqliteParseStore, SqliteProviderSettingsStore,
-    SqliteTranslationStore,
+    SqliteReadingAssistantStore, SqliteTranslationStore,
 };
 use atlas_translation::{DefaultTranslationModule, TranslationModule};
 use tauri::Manager;
@@ -92,16 +94,26 @@ pub fn run() {
             ));
             tauri::async_runtime::block_on(parse.recover())?;
             let translation: Arc<dyn TranslationModule> = Arc::new(DefaultTranslationModule::new(
-                parse_store,
+                parse_store.clone(),
                 Arc::new(SqliteTranslationStore::new(&database)),
                 providers.clone(),
                 Arc::new(OpenAiCompatibleTranslationAdapter::new()?),
             ));
             tauri::async_runtime::block_on(translation.recover())?;
+            let assistant: Arc<dyn ReadingAssistantModule> =
+                Arc::new(DefaultReadingAssistantModule::new(
+                    parse_store,
+                    translation.clone(),
+                    Arc::new(SqliteReadingAssistantStore::new(&database)),
+                    providers.clone(),
+                    Arc::new(OpenAiCompatibleReadingAssistantAdapter::new()?),
+                ));
+            tauri::async_runtime::block_on(assistant.recover())?;
             let reading_session = Arc::new(DefaultReadingSession::new(
                 providers,
                 parse.clone(),
                 translation,
+                assistant,
             ));
             app.manage(AppState::new(
                 library,

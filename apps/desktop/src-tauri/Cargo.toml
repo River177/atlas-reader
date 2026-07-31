@@ -20,6 +20,7 @@ atlas-document-reader = { path = "../../../crates/atlas-document-reader" }
 atlas-library = { path = "../../../crates/atlas-library" }
 atlas-parse = { path = "../../../crates/atlas-parse" }
 atlas-provider-settings = { path = "../../../crates/atlas-provider-settings" }
+atlas-reading-assistant = { path = "../../../crates/atlas-reading-assistant" }
 atlas-reading-session = { path = "../../../crates/atlas-reading-session" }
 atlas-storage = { path = "../../../crates/atlas-storage" }
 atlas-translation = { path = "../../../crates/atlas-translation" }

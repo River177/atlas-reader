@@ -4,12 +4,17 @@ import type {
   CanonicalBlock,
   CanonicalChapter,
   CanonicalDocument,
+  CitationTarget,
   ContentAtom,
   DocumentSummary,
   ParseSnapshot,
   ParsedDocumentView,
+  ReadingAssistantCommand,
+  ReadingAssistantSnapshot,
+  ReadingMessageId,
   ReaderSourceToken,
   ReadingPositionUpdate,
+  SelectionContextInput,
   SessionId,
   SessionSnapshot,
   StructuredContent,
@@ -25,6 +30,7 @@ import {
   type PdfViewerModule,
   type PdfViewerState,
 } from "./pdf-viewer-module";
+import { captureTranslationSelection } from "./translation-selection";
 import "./reader.css";
 
 interface ReaderScreenProps {
@@ -46,6 +52,7 @@ const initialViewerState: PdfViewerState = {
 const positionSaveDelayMs = 750;
 const parsePollDelayMs = 750;
 const translationPollDelayMs = 750;
+const assistantPollDelayMs = 300;
 
 const emptyParseView: ParsedDocumentView = {
   parse: {
@@ -66,6 +73,14 @@ const emptyTranslationSnapshot: TranslationSnapshot = {
   prefetchedChapterId: null,
 };
 
+const emptyReadingAssistantSnapshot: ReadingAssistantSnapshot = {
+  schemaVersion: 1,
+  conversationId: null,
+  messages: [],
+  activeAssistantMessageId: null,
+  latestSelection: null,
+};
+
 export function ReaderScreen({
   bridge,
   document,
@@ -75,6 +90,9 @@ export function ReaderScreen({
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<PdfViewerModule | undefined>(undefined);
   const focusSequenceRef = useRef(0);
+  const sessionRevisionRef = useRef(0);
+  const sessionCommandChainRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingPdfPageRef = useRef<number | undefined>(undefined);
   const [viewerState, setViewerState] = useState(initialViewerState);
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
@@ -84,24 +102,47 @@ export function ReaderScreen({
   const [parseError, setParseError] = useState<string>();
   const [translation, setTranslation] = useState<TranslationSnapshot>(emptyTranslationSnapshot);
   const [translationError, setTranslationError] = useState<string>();
+  const [readingAssistant, setReadingAssistant] = useState<ReadingAssistantSnapshot>(
+    emptyReadingAssistantSnapshot,
+  );
+  const [assistantError, setAssistantError] = useState<string>();
+  const [assistantPollError, setAssistantPollError] = useState<string>();
+  const [assistantRefreshPending, setAssistantRefreshPending] = useState(false);
+  const [assistantQuestion, setAssistantQuestion] = useState("");
+  const [assistantActionPending, setAssistantActionPending] = useState(false);
+  const [pendingSelection, setPendingSelection] = useState<SelectionContextInput>();
+  const [sidebarMode, setSidebarMode] = useState<"outline" | "assistant">("outline");
+  const [pendingCitation, setPendingCitation] = useState<CitationTarget>();
+  const [highlightedBlockId, setHighlightedBlockId] = useState<string>();
   const [sessionId, setSessionId] = useState<SessionId>();
-  const [sessionRevision, setSessionRevision] = useState(0);
   const [viewMode, setViewMode] = useState<"pdf" | "structured">("pdf");
   const [activeChapterId, setActiveChapterId] = useState<string>();
   const [focusGeneration, setFocusGeneration] = useState(0);
   const [parseActionPending, setParseActionPending] = useState(false);
+  const updateSessionRevision = useCallback((revision: number) => {
+    sessionRevisionRef.current = revision;
+  }, []);
+  const enqueueSessionAction = useCallback((action: () => Promise<void>) => {
+    const run = sessionCommandChainRef.current.then(action);
+    sessionCommandChainRef.current = run.catch(() => undefined);
+    return run;
+  }, []);
   const applySessionSnapshot = useCallback((snapshot: SessionSnapshot, sequence: number) => {
     if (sequence !== focusSequenceRef.current) {
       return false;
     }
-    setSessionRevision(snapshot.revision);
+    sessionRevisionRef.current = snapshot.revision;
     setTranslation(snapshot.translation);
+    setReadingAssistant(snapshot.readingAssistant);
     setActiveChapterId(snapshot.activeChapterId ?? undefined);
     setTranslationError(undefined);
+    setAssistantPollError(undefined);
+    setAssistantRefreshPending(false);
     return true;
   }, []);
   const parseRunning = parseIsRunning(parseView.parse);
   const translationRunning = translation.activeChapter?.jobActive ?? false;
+  const assistantRunning = readingAssistant.activeAssistantMessageId !== null;
   const resolvedActiveChapterId = parseView.document?.chapters.some(
     (chapter) => chapter.id === activeChapterId,
   )
@@ -321,6 +362,41 @@ export function ReaderScreen({
   ]);
 
   useEffect(() => {
+    if (!sessionId || (!assistantRunning && !assistantRefreshPending)) {
+      return;
+    }
+    let disposed = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const snapshot = await bridge.getReadingSessionSnapshot(sessionId);
+        if (disposed) {
+          return;
+        }
+        updateSessionRevision(snapshot.revision);
+        setReadingAssistant(snapshot.readingAssistant);
+        setAssistantPollError(undefined);
+        setAssistantRefreshPending(false);
+        if (snapshot.readingAssistant.activeAssistantMessageId) {
+          timer = window.setTimeout(() => void poll(), assistantPollDelayMs);
+        }
+      } catch (reason) {
+        if (!disposed) {
+          setAssistantPollError(errorMessage(reason));
+          timer = window.setTimeout(() => void poll(), assistantPollDelayMs);
+        }
+      }
+    };
+    timer = window.setTimeout(() => void poll(), assistantPollDelayMs);
+    return () => {
+      disposed = true;
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [assistantRefreshPending, assistantRunning, bridge, sessionId, updateSessionRevision]);
+
+  useEffect(() => {
     if (!parseRunning) {
       return;
     }
@@ -352,6 +428,34 @@ export function ReaderScreen({
       }
     };
   }, [bridge, document.id, parseRunning]);
+
+  useEffect(() => {
+    if (
+      !pendingCitation ||
+      viewMode !== "structured" ||
+      resolvedActiveChapterId !== pendingCitation.chapterId
+    ) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const block = Array.from(
+        window.document.querySelectorAll<HTMLElement>("[data-bilingual-block-id]"),
+      ).find((candidate) => candidate.dataset.bilingualBlockId === pendingCitation.blockId);
+      block?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+      setHighlightedBlockId(pendingCitation.blockId);
+      setPendingCitation(undefined);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [pendingCitation, resolvedActiveChapterId, viewMode]);
+
+  useEffect(() => {
+    const page = pendingPdfPageRef.current;
+    if (viewMode !== "pdf" || page === undefined || viewerState.pageCount === 0) {
+      return;
+    }
+    pendingPdfPageRef.current = undefined;
+    viewerRef.current?.setPage(page);
+  }, [viewMode, viewerState.pageCount]);
 
   const changePage = (page: number) => {
     viewerRef.current?.setPage(page);
@@ -403,29 +507,31 @@ export function ReaderScreen({
     setActiveChapterId(chapter.id);
     documentElement(chapter.id)?.scrollIntoView?.({ behavior: "smooth", block: "start" });
     if (sessionId) {
-      void bridge
-        .dispatchReadingCommand({
-          sessionId,
-          commandId: `focus-${Date.now()}-${chapter.id}`,
-          command: { type: "focus_chapter", chapterId: chapter.id },
-        })
-        .then(async (receipt) => {
-          if (sequence !== focusSequenceRef.current) {
-            return;
-          }
-          setSessionRevision(receipt.revision);
-          if (receipt.rejection) {
-            throw receipt.rejection;
-          }
-          await refreshSessionTranslation(sessionId, sequence);
-        })
-        .catch(async (reason: unknown) => {
-          if (sequence !== focusSequenceRef.current) {
-            return;
-          }
-          await refreshSessionTranslation(sessionId, sequence).catch(() => undefined);
-          setTranslationError(errorMessage(reason));
-        });
+      void enqueueSessionAction(() =>
+        bridge
+          .dispatchReadingCommand({
+            sessionId,
+            commandId: `focus-${Date.now()}-${chapter.id}`,
+            command: { type: "focus_chapter", chapterId: chapter.id },
+          })
+          .then(async (receipt) => {
+            updateSessionRevision(receipt.revision);
+            if (sequence !== focusSequenceRef.current) {
+              return;
+            }
+            if (receipt.rejection) {
+              throw receipt.rejection;
+            }
+            await refreshSessionTranslation(sessionId, sequence);
+          })
+          .catch(async (reason: unknown) => {
+            if (sequence !== focusSequenceRef.current) {
+              return;
+            }
+            await refreshSessionTranslation(sessionId, sequence).catch(() => undefined);
+            setTranslationError(errorMessage(reason));
+          }),
+      );
     }
   };
 
@@ -435,21 +541,112 @@ export function ReaderScreen({
       return;
     }
     const sequence = focusSequenceRef.current;
-    void bridge
-      .dispatchReadingCommand({
-        sessionId,
-        commandId: `retry-translation-${Date.now()}-${chapterId}`,
-        expectedRevision: sessionRevision,
-        command: { type: "retry_translation", chapterId },
-      })
-      .then(async (receipt) => {
-        setSessionRevision(receipt.revision);
+    void enqueueSessionAction(() =>
+      bridge
+        .dispatchReadingCommand({
+          sessionId,
+          commandId: `retry-translation-${Date.now()}-${chapterId}`,
+          expectedRevision: sessionRevisionRef.current,
+          command: { type: "retry_translation", chapterId },
+        })
+        .then(async (receipt) => {
+          updateSessionRevision(receipt.revision);
+          if (receipt.rejection) {
+            throw receipt.rejection;
+          }
+          await refreshSessionTranslation(sessionId, sequence);
+        })
+        .catch((reason: unknown) => setTranslationError(errorMessage(reason))),
+    );
+  };
+
+  const dispatchAssistant = async (command: ReadingAssistantCommand) => {
+    if (!sessionId) {
+      return;
+    }
+    setAssistantActionPending(true);
+    try {
+      await enqueueSessionAction(async () => {
+        const receipt = await bridge.dispatchReadingCommand({
+          sessionId,
+          commandId: createClientId("assistant-command"),
+          expectedRevision: sessionRevisionRef.current,
+          command: { type: "reading_assistant", command },
+        });
+        updateSessionRevision(receipt.revision);
         if (receipt.rejection) {
           throw receipt.rejection;
         }
-        await refreshSessionTranslation(sessionId, sequence);
-      })
-      .catch((reason: unknown) => setTranslationError(errorMessage(reason)));
+        setAssistantError(undefined);
+        try {
+          const snapshot = await bridge.getReadingSessionSnapshot(sessionId);
+          updateSessionRevision(snapshot.revision);
+          setReadingAssistant(snapshot.readingAssistant);
+          setAssistantPollError(undefined);
+          setAssistantRefreshPending(false);
+        } catch (reason) {
+          setAssistantPollError(errorMessage(reason));
+          setAssistantRefreshPending(true);
+        }
+      });
+    } catch (reason) {
+      if (sessionId) {
+        const snapshot = await bridge.getReadingSessionSnapshot(sessionId).catch(() => undefined);
+        if (snapshot) {
+          updateSessionRevision(snapshot.revision);
+          setReadingAssistant(snapshot.readingAssistant);
+        }
+      }
+      setAssistantError(errorMessage(reason));
+      throw reason;
+    } finally {
+      setAssistantActionPending(false);
+    }
+  };
+
+  const sendAssistantMessage = async () => {
+    const question = assistantQuestion.trim();
+    if (!question) {
+      return;
+    }
+    const userMessageId = createClientId("reader-message") as ReadingMessageId;
+    const selection = pendingSelection;
+    await dispatchAssistant({
+      type: "send_message",
+      userMessageId,
+      text: question,
+      selection: selection ?? null,
+    });
+    setAssistantQuestion("");
+    setPendingSelection((current) => (current === selection ? undefined : current));
+  };
+
+  const selectTranslation = useCallback((block: TranslatedBlockView, root: HTMLElement) => {
+    const selection = captureTranslationSelection(root, block);
+    if (!selection) {
+      return;
+    }
+    setPendingSelection(selection);
+    setSidebarMode("assistant");
+  }, []);
+
+  const navigateCitation = (citation: CitationTarget) => {
+    setViewMode("structured");
+    setSidebarMode("assistant");
+    setPendingCitation(citation);
+    if (resolvedActiveChapterId !== citation.chapterId) {
+      const chapter = parseView.document?.chapters.find(
+        (candidate) => candidate.id === citation.chapterId,
+      );
+      if (chapter) {
+        focusChapter(chapter);
+      }
+    }
+  };
+
+  const openCitationPdf = (citation: CitationTarget) => {
+    pendingPdfPageRef.current = citation.page;
+    setViewMode("pdf");
   };
 
   return (
@@ -625,10 +822,48 @@ export function ReaderScreen({
         {viewMode === "structured" && parseView.document ? (
           <StructuredReader
             activeChapterId={resolvedActiveChapterId}
+            assistantError={assistantError ?? assistantPollError}
+            assistantQuestion={assistantQuestion}
+            assistantActionPending={assistantActionPending}
             bridge={bridge}
             document={parseView.document}
+            highlightedBlockId={highlightedBlockId}
+            onAssistantQuestionChange={setAssistantQuestion}
+            onCancelAssistant={() => {
+              const messageId = readingAssistant.activeAssistantMessageId;
+              if (messageId) {
+                void dispatchAssistant({
+                  type: "cancel_response",
+                  assistantMessageId: messageId,
+                }).catch(() => undefined);
+              }
+            }}
+            onClearAssistant={() => {
+              if (
+                readingAssistant.messages.length > 0 &&
+                window.confirm("Clear this paper's Reading Assistant conversation?")
+              ) {
+                void dispatchAssistant({ type: "clear_conversation" }).catch(() => undefined);
+                setPendingSelection(undefined);
+              }
+            }}
             onFocusChapter={focusChapter}
+            onNavigateCitation={navigateCitation}
+            onOpenCitationPdf={openCitationPdf}
+            onRemoveSelection={() => setPendingSelection(undefined)}
+            onRetryAssistant={(userMessageId) =>
+              void dispatchAssistant({
+                type: "retry_response",
+                userMessageId,
+              }).catch(() => undefined)
+            }
             onRetryTranslation={retryTranslation}
+            onSelectTranslation={selectTranslation}
+            onSendAssistant={() => void sendAssistantMessage().catch(() => undefined)}
+            pendingSelection={pendingSelection}
+            readingAssistant={readingAssistant}
+            sidebarMode={sidebarMode}
+            setSidebarMode={setSidebarMode}
             translation={translation}
           />
         ) : null}
@@ -737,22 +972,57 @@ function ParseIndicator({ parse, error }: { parse: ParseSnapshot; error: string 
 
 function StructuredReader({
   activeChapterId,
+  assistantActionPending,
+  assistantError,
+  assistantQuestion,
   bridge,
   document,
+  highlightedBlockId,
+  onAssistantQuestionChange,
+  onCancelAssistant,
+  onClearAssistant,
   onFocusChapter,
+  onNavigateCitation,
+  onOpenCitationPdf,
+  onRemoveSelection,
+  onRetryAssistant,
   onRetryTranslation,
+  onSelectTranslation,
+  onSendAssistant,
+  pendingSelection,
+  readingAssistant,
+  setSidebarMode,
+  sidebarMode,
   translation,
 }: {
   activeChapterId: string | undefined;
+  assistantActionPending: boolean;
+  assistantError: string | undefined;
+  assistantQuestion: string;
   bridge: AtlasBridge;
   document: CanonicalDocument;
+  highlightedBlockId: string | undefined;
+  onAssistantQuestionChange(value: string): void;
+  onCancelAssistant(): void;
+  onClearAssistant(): void;
   onFocusChapter(chapter: CanonicalChapter): void;
+  onNavigateCitation(citation: CitationTarget): void;
+  onOpenCitationPdf(citation: CitationTarget): void;
+  onRemoveSelection(): void;
+  onRetryAssistant(userMessageId: ReadingMessageId): void;
   onRetryTranslation(): void;
+  onSelectTranslation(block: TranslatedBlockView, root: HTMLElement): void;
+  onSendAssistant(): void;
+  pendingSelection: SelectionContextInput | undefined;
+  readingAssistant: ReadingAssistantSnapshot;
+  setSidebarMode(mode: "outline" | "assistant"): void;
+  sidebarMode: "outline" | "assistant";
   translation: TranslationSnapshot;
 }) {
   const chapter =
     document.chapters.find((candidate) => candidate.id === activeChapterId) ?? document.chapters[0];
   const activeTranslation = translation.activeChapter;
+  const selectedContext = pendingSelection ?? readingAssistant.latestSelection;
   const activeTranslatedBlocks =
     activeTranslation && activeTranslation.chapterId === chapter?.id
       ? activeTranslation.blocks
@@ -761,25 +1031,65 @@ function StructuredReader({
   const failed = activeTranslation?.blocks.some((block) => block.state === "failed");
   return (
     <div className="structured-reader">
-      <aside className="chapter-outline" aria-label="Paper chapters">
-        <div className="chapter-outline-heading">
-          <span>Document map</span>
-          <strong>{document.chapters.length} chapters</strong>
+      <aside className="reader-sidebar" aria-label="Paper navigation and Reading Assistant">
+        <div className="reader-sidebar-tabs" role="tablist" aria-label="Reader sidebar">
+          <button
+            aria-selected={sidebarMode === "outline"}
+            className={sidebarMode === "outline" ? "is-active" : undefined}
+            onClick={() => setSidebarMode("outline")}
+            role="tab"
+            type="button"
+          >
+            Outline
+          </button>
+          <button
+            aria-selected={sidebarMode === "assistant"}
+            className={sidebarMode === "assistant" ? "is-active" : undefined}
+            onClick={() => setSidebarMode("assistant")}
+            role="tab"
+            type="button"
+          >
+            Assistant
+          </button>
         </div>
-        <nav aria-label="Paper chapters">
-          {document.chapters.map((chapter) => (
-            <button
-              className={activeChapterId === chapter.id ? "is-active" : undefined}
-              key={chapter.id}
-              onClick={() => onFocusChapter(chapter)}
-              style={{ paddingLeft: `${12 + Math.max(0, chapter.depth - 1) * 12}px` }}
-              type="button"
-            >
-              <span>{String(chapter.orderIndex + 1).padStart(2, "0")}</span>
-              {chapter.sourceTitle}
-            </button>
-          ))}
-        </nav>
+        {sidebarMode === "outline" ? (
+          <div className="chapter-outline" role="tabpanel" aria-label="Paper chapters">
+            <div className="chapter-outline-heading">
+              <span>Document map</span>
+              <strong>{document.chapters.length} chapters</strong>
+            </div>
+            <nav aria-label="Paper chapters">
+              {document.chapters.map((chapter) => (
+                <button
+                  className={activeChapterId === chapter.id ? "is-active" : undefined}
+                  key={chapter.id}
+                  onClick={() => onFocusChapter(chapter)}
+                  style={{ paddingLeft: `${12 + Math.max(0, chapter.depth - 1) * 12}px` }}
+                  type="button"
+                >
+                  <span>{String(chapter.orderIndex + 1).padStart(2, "0")}</span>
+                  {chapter.sourceTitle}
+                </button>
+              ))}
+            </nav>
+          </div>
+        ) : (
+          <ReadingAssistantPanel
+            actionPending={assistantActionPending}
+            error={assistantError}
+            onCancel={onCancelAssistant}
+            onClear={onClearAssistant}
+            onNavigateCitation={onNavigateCitation}
+            onOpenCitationPdf={onOpenCitationPdf}
+            onQuestionChange={onAssistantQuestionChange}
+            onRemoveSelection={onRemoveSelection}
+            onRetry={onRetryAssistant}
+            onSend={onSendAssistant}
+            pendingSelection={pendingSelection}
+            question={assistantQuestion}
+            snapshot={readingAssistant}
+          />
+        )}
       </aside>
 
       <article className="structured-bilingual" aria-label="Bilingual paper text">
@@ -803,16 +1113,22 @@ function StructuredReader({
         {chapter ? (
           <section className="structured-chapter" id={`chapter-${chapter.id}`} key={chapter.id}>
             <div className="structured-chapter-kicker">
-              Chapter {chapter.orderIndex + 1} · pages {chapter.pageStart}–{chapter.pageEnd}
+              Chapter {chapter.orderIndex + 1} · pages {chapter.pageStart}-{chapter.pageEnd}
             </div>
             <h2>{chapter.sourceTitle}</h2>
             {chapter.blocks.map((block) => (
-              <div className="bilingual-block" data-block-id={block.id} key={block.id}>
+              <div
+                className={`bilingual-block${highlightedBlockId === block.id ? " is-citation-target" : ""}`}
+                data-bilingual-block-id={block.id}
+                key={block.id}
+              >
                 <SourceBlock block={block} bridge={bridge} document={document} />
                 <TargetBlock
                   block={translatedBlocks.get(block.id)}
                   bridge={bridge}
                   document={document}
+                  onSelect={onSelectTranslation}
+                  selection={selectedContext?.blockId === block.id ? selectedContext : undefined}
                 />
               </div>
             ))}
@@ -823,19 +1139,292 @@ function StructuredReader({
   );
 }
 
+function ReadingAssistantPanel({
+  actionPending,
+  error,
+  onCancel,
+  onClear,
+  onNavigateCitation,
+  onOpenCitationPdf,
+  onQuestionChange,
+  onRemoveSelection,
+  onRetry,
+  onSend,
+  pendingSelection,
+  question,
+  snapshot,
+}: {
+  actionPending: boolean;
+  error: string | undefined;
+  onCancel(): void;
+  onClear(): void;
+  onNavigateCitation(citation: CitationTarget): void;
+  onOpenCitationPdf(citation: CitationTarget): void;
+  onQuestionChange(value: string): void;
+  onRemoveSelection(): void;
+  onRetry(userMessageId: ReadingMessageId): void;
+  onSend(): void;
+  pendingSelection: SelectionContextInput | undefined;
+  question: string;
+  snapshot: ReadingAssistantSnapshot;
+}) {
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  const previousLastMessageIdRef = useRef<ReadingMessageId | undefined>(undefined);
+  const active = snapshot.activeAssistantMessageId !== null;
+  const context = pendingSelection ?? snapshot.latestSelection;
+  const latestAttemptByReader = new Map<ReadingMessageId, ReadingMessageId>();
+  for (const message of snapshot.messages) {
+    if (message.role === "assistant") {
+      latestAttemptByReader.set(message.respondingTo, message.id);
+    }
+  }
+  useEffect(() => {
+    const messages = messagesRef.current;
+    const lastMessageId = snapshot.messages.at(-1)?.id;
+    const messageAdded = lastMessageId !== previousLastMessageIdRef.current;
+    if (messages && (stickToBottomRef.current || messageAdded)) {
+      messages.scrollTop = messages.scrollHeight;
+      stickToBottomRef.current = true;
+    }
+    previousLastMessageIdRef.current = lastMessageId;
+  }, [snapshot.messages]);
+
+  return (
+    <section className="assistant-panel" role="tabpanel" aria-label="Reading Assistant">
+      <header className="assistant-panel-header">
+        <div>
+          <span>Reading Assistant</span>
+          <strong>Ask from the paper</strong>
+        </div>
+        {snapshot.messages.length > 0 ? (
+          <button
+            className="assistant-clear"
+            disabled={actionPending}
+            onClick={onClear}
+            type="button"
+          >
+            Clear
+          </button>
+        ) : null}
+      </header>
+
+      {context ? (
+        <div className="assistant-context">
+          <div>
+            <span>{pendingSelection ? "New selection" : "Current context"}</span>
+            <strong>{context.selectedText}</strong>
+          </div>
+          {pendingSelection ? (
+            <button aria-label="Remove selected context" onClick={onRemoveSelection} type="button">
+              ×
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div
+        className="assistant-messages"
+        ref={messagesRef}
+        aria-live="polite"
+        onScroll={(event) => {
+          const messages = event.currentTarget;
+          stickToBottomRef.current =
+            messages.scrollHeight - messages.scrollTop - messages.clientHeight < 32;
+        }}
+      >
+        {snapshot.messages.length === 0 ? (
+          <div className="assistant-empty">
+            <strong>Select a Chinese passage</strong>
+            <p>The aligned English source and nearby blocks will be attached automatically.</p>
+          </div>
+        ) : (
+          snapshot.messages.map((message) => (
+            <AssistantMessage
+              canRetry={
+                message.role === "assistant" &&
+                !active &&
+                !actionPending &&
+                latestAttemptByReader.get(message.respondingTo) === message.id &&
+                (message.state === "failed" || message.state === "cancelled")
+              }
+              key={message.id}
+              message={message}
+              onNavigateCitation={onNavigateCitation}
+              onOpenCitationPdf={onOpenCitationPdf}
+              onRetry={onRetry}
+            />
+          ))
+        )}
+      </div>
+
+      {error ? (
+        <div className="assistant-error" role="alert">
+          {error}
+        </div>
+      ) : null}
+
+      <form
+        className="assistant-composer"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSend();
+        }}
+      >
+        <label htmlFor="assistant-question">Ask about this selection</label>
+        <textarea
+          disabled={active || actionPending}
+          id="assistant-question"
+          maxLength={8000}
+          onChange={(event) => onQuestionChange(event.currentTarget.value)}
+          placeholder="Why is this assumption necessary?"
+          rows={3}
+          value={question}
+        />
+        <p>
+          {context
+            ? "Sends this selection, its aligned source, nearby blocks, and up to four recent turns."
+            : "Select translated text before the first question."}
+        </p>
+        <div className="assistant-composer-actions">
+          {active ? (
+            <button disabled={actionPending} onClick={onCancel} type="button">
+              Stop
+            </button>
+          ) : null}
+          <button
+            className="assistant-send"
+            disabled={active || actionPending || !question.trim() || !context}
+            type="submit"
+          >
+            Ask
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function AssistantMessage({
+  canRetry,
+  message,
+  onNavigateCitation,
+  onOpenCitationPdf,
+  onRetry,
+}: {
+  canRetry: boolean;
+  message: ReadingAssistantSnapshot["messages"][number];
+  onNavigateCitation(citation: CitationTarget): void;
+  onOpenCitationPdf(citation: CitationTarget): void;
+  onRetry(userMessageId: ReadingMessageId): void;
+}) {
+  if (message.role === "reader") {
+    return (
+      <article className="assistant-message assistant-message--reader">
+        {message.selectionContext ? (
+          <blockquote>{message.selectionContext.selectedText}</blockquote>
+        ) : null}
+        <p>{message.text}</p>
+      </article>
+    );
+  }
+  return (
+    <article className={`assistant-message assistant-message--assistant is-${message.state}`}>
+      <div className="assistant-message-state">
+        {message.state === "queued"
+          ? "Waiting"
+          : message.state === "streaming"
+            ? "Answering"
+            : message.state === "cancelled"
+              ? "Stopped"
+              : message.state === "failed"
+                ? "Failed"
+                : "Answer"}
+      </div>
+      <p>{message.text || (message.state === "queued" ? "Preparing context…" : "")}</p>
+      {message.citations.length > 0 ? (
+        <div className="assistant-citations" aria-label="Paper citations">
+          {message.citations.map((citation) => (
+            <span key={citation.id}>
+              <button onClick={() => onNavigateCitation(citation)} type="button">
+                {citation.label}
+              </button>
+              <button
+                aria-label={`Open ${citation.label} in PDF`}
+                onClick={() => onOpenCitationPdf(citation)}
+                type="button"
+              >
+                PDF
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : message.state === "ready" ? (
+        <small className="assistant-citation-warning">No paper location provided.</small>
+      ) : null}
+      {message.safeMessage ? <small>{message.safeMessage}</small> : null}
+      {canRetry ? (
+        <button
+          className="assistant-retry"
+          onClick={() => onRetry(message.respondingTo)}
+          type="button"
+        >
+          Retry
+        </button>
+      ) : null}
+    </article>
+  );
+}
+
 function TargetBlock({
   block,
   bridge,
   document,
+  onSelect,
+  selection,
 }: {
   block: TranslatedBlockView | undefined;
   bridge: AtlasBridge;
   document: CanonicalDocument;
+  onSelect(block: TranslatedBlockView, root: HTMLElement): void;
+  selection: PlainTextHighlight | undefined;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (block?.state !== "ready" || !block.target) {
+      return;
+    }
+    const captureAccessibleSelection = () => {
+      const root = rootRef.current;
+      const selection = window.getSelection();
+      if (!root || !selection || selection.isCollapsed || selection.rangeCount === 0) {
+        return;
+      }
+      const range = selection.getRangeAt(0);
+      if (root.contains(range.commonAncestorContainer)) {
+        onSelect(block, root);
+      }
+    };
+    window.document.addEventListener("selectionchange", captureAccessibleSelection);
+    return () => window.document.removeEventListener("selectionchange", captureAccessibleSelection);
+  }, [block, onSelect]);
+
   if (block?.state === "ready" && block.target) {
     return (
-      <div className="target-block target-block--ready">
-        <StructuredContentView bridge={bridge} content={block.target} document={document} />
+      <div
+        ref={rootRef}
+        aria-label="Chinese translation"
+        className="target-block target-block--ready"
+        data-reading-target-block={block.blockId}
+        onMouseUp={(event) => onSelect(block, event.currentTarget)}
+      >
+        <StructuredContentView
+          bridge={bridge}
+          content={block.target}
+          document={document}
+          highlight={selection}
+          selectable
+        />
       </div>
     );
   }
@@ -880,20 +1469,25 @@ function StructuredContentView({
   bridge,
   content,
   document,
+  highlight,
+  selectable = false,
 }: {
   bridge: AtlasBridge;
   content: StructuredContent;
   document: CanonicalDocument;
+  highlight?: PlainTextHighlight | undefined;
+  selectable?: boolean;
 }) {
   const assets = new Map(document.assets.map((asset) => [asset.id, asset]));
+  const cursor = selectable ? { value: 0 } : undefined;
   if (content.atoms.length === 0) {
-    return <p>{content.plainText}</p>;
+    return <p>{renderTextAtom(content.plainText, cursor, highlight)}</p>;
   }
   return (
     <div className="structured-content">
       {content.atoms.map((atom, index) => (
         <Fragment key={`${atom.type}-${index}`}>
-          {renderAtom(atom, document, assets, bridge)}
+          {renderAtom(atom, document, assets, bridge, cursor, highlight)}
         </Fragment>
       ))}
     </div>
@@ -905,19 +1499,35 @@ function renderAtom(
   document: CanonicalDocument,
   assets: Map<string, CanonicalAsset>,
   bridge: AtlasBridge,
+  cursor?: PlainTextCursor,
+  highlight?: PlainTextHighlight,
 ): ReactNode {
   switch (atom.type) {
     case "text":
-      return atom.value;
-    case "formula":
+      return renderTextAtom(atom.value, cursor, highlight);
+    case "formula": {
+      const offsets = advancePlainText(cursor, atom.latex);
       return (
-        <span className={atom.display ? "formula formula--display" : "formula"} role="math">
-          {atom.latex}
+        <span
+          className={atom.display ? "formula formula--display" : "formula"}
+          data-plain-end={offsets?.end}
+          data-plain-start={offsets?.start}
+          role="math"
+        >
+          {renderHighlightedText(atom.latex, offsets, highlight)}
         </span>
       );
-    case "citation":
-      return <span className="citation">{atom.label}</span>;
+    }
+    case "citation": {
+      const offsets = advancePlainText(cursor, atom.label);
+      return (
+        <span className="citation" data-plain-end={offsets?.end} data-plain-start={offsets?.start}>
+          {renderHighlightedText(atom.label, offsets, highlight)}
+        </span>
+      );
+    }
     case "line_break":
+      advancePlainText(cursor, "\n");
       return <br />;
     case "table":
       return (
@@ -926,19 +1536,27 @@ function renderAtom(
             <tbody>
               {atom.rows.map((row, rowIndex) => (
                 <tr key={rowIndex}>
-                  {row.map((cell) => (
-                    <td
-                      colSpan={cell.columnSpan}
-                      key={`${cell.row}-${cell.column}`}
-                      rowSpan={cell.rowSpan}
-                    >
-                      {cell.content.map((cellAtom, atomIndex) => (
-                        <Fragment key={atomIndex}>
-                          {renderAtom(cellAtom, document, assets, bridge)}
-                        </Fragment>
-                      ))}
-                    </td>
-                  ))}
+                  {row.map((cell, cellIndex) => {
+                    if (rowIndex > 0 && cellIndex === 0) {
+                      advancePlainText(cursor, "\n");
+                    }
+                    if (cellIndex > 0) {
+                      advancePlainText(cursor, " | ");
+                    }
+                    return (
+                      <td
+                        colSpan={cell.columnSpan}
+                        key={`${cell.row}-${cell.column}`}
+                        rowSpan={cell.rowSpan}
+                      >
+                        {cell.content.map((cellAtom, atomIndex) => (
+                          <Fragment key={atomIndex}>
+                            {renderAtom(cellAtom, document, assets, bridge, cursor, highlight)}
+                          </Fragment>
+                        ))}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
@@ -955,16 +1573,89 @@ function renderAtom(
         document.artifactId,
         asset.relativePath,
       );
+      const offsets = atom.alt ? advancePlainText(cursor, atom.alt) : undefined;
       return source ? (
         <figure>
           <img alt={atom.alt ?? "Paper figure"} loading="lazy" src={source} />
-          {atom.alt ? <figcaption>{atom.alt}</figcaption> : null}
+          {atom.alt ? (
+            <figcaption data-plain-end={offsets?.end} data-plain-start={offsets?.start}>
+              {renderHighlightedText(atom.alt, offsets, highlight)}
+            </figcaption>
+          ) : null}
         </figure>
       ) : null;
     }
   }
 }
 
+interface PlainTextCursor {
+  value: number;
+}
+
+interface PlainTextHighlight {
+  startUtf16: number;
+  endUtf16: number;
+}
+
+function advancePlainText(
+  cursor: PlainTextCursor | undefined,
+  value: string,
+): { start: number; end: number } | undefined {
+  if (!cursor) {
+    return undefined;
+  }
+  const start = cursor.value;
+  cursor.value += value.length;
+  return { start, end: cursor.value };
+}
+
+function renderTextAtom(
+  value: string,
+  cursor: PlainTextCursor | undefined,
+  highlight?: PlainTextHighlight,
+): ReactNode {
+  const offsets = advancePlainText(cursor, value);
+  return offsets ? (
+    <span data-plain-end={offsets.end} data-plain-start={offsets.start}>
+      {renderHighlightedText(value, offsets, highlight)}
+    </span>
+  ) : (
+    value
+  );
+}
+
+function renderHighlightedText(
+  value: string,
+  offsets: { start: number; end: number } | undefined,
+  highlight: PlainTextHighlight | undefined,
+): ReactNode {
+  if (
+    !offsets ||
+    !highlight ||
+    highlight.endUtf16 <= offsets.start ||
+    highlight.startUtf16 >= offsets.end
+  ) {
+    return value;
+  }
+  const start = Math.max(0, highlight.startUtf16 - offsets.start);
+  const end = Math.min(value.length, highlight.endUtf16 - offsets.start);
+  return (
+    <>
+      {value.slice(0, start)}
+      <mark className="reading-selection-highlight">{value.slice(start, end)}</mark>
+      {value.slice(end)}
+    </>
+  );
+}
+
 function documentElement(chapterId: string): HTMLElement | null {
   return document.getElementById(`chapter-${chapterId}`);
+}
+
+function createClientId(prefix: string): string {
+  const value =
+    typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}-${value}`;
 }

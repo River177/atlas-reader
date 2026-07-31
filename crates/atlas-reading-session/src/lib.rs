@@ -10,6 +10,7 @@ use atlas_domain::{
     SessionLifecycle, SessionSnapshot, TranslationSnapshot,
 };
 use atlas_parse::ParseModule;
+use atlas_reading_assistant::{DispatchReadingAssistantInput, ReadingAssistantModule};
 use atlas_translation::{EnsureTranslationInput, RetryTranslationInput, TranslationModule};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -51,6 +52,7 @@ pub struct DefaultReadingSession {
     providers: Arc<dyn ProviderStatusPort>,
     parser: Arc<dyn ParseModule>,
     translator: Arc<dyn TranslationModule>,
+    assistant: Arc<dyn ReadingAssistantModule>,
     registry: Mutex<Registry>,
     transitions: Mutex<()>,
 }
@@ -69,11 +71,13 @@ impl DefaultReadingSession {
         providers: Arc<dyn ProviderStatusPort>,
         parser: Arc<dyn ParseModule>,
         translator: Arc<dyn TranslationModule>,
+        assistant: Arc<dyn ReadingAssistantModule>,
     ) -> Self {
         Self {
             providers,
             parser,
             translator,
+            assistant,
             registry: Mutex::new(Registry::default()),
             transitions: Mutex::new(()),
         }
@@ -132,6 +136,7 @@ impl DefaultReadingSession {
             }
             _ => TranslationSnapshot::default(),
         };
+        let reading_assistant = self.assistant.view(document_id).await?;
         let mut registry = self.registry.lock().await;
         let snapshot = registry
             .sessions
@@ -149,7 +154,26 @@ impl DefaultReadingSession {
             .into_iter()
             .collect();
         snapshot.translation = translation;
+        snapshot.reading_assistant = reading_assistant;
         Ok(snapshot.clone())
+    }
+
+    async fn close_document_modules(&self, document_id: &DocumentId) -> Result<(), AtlasError> {
+        let (translation, assistant) = tokio::join!(
+            self.translator.close_document(document_id),
+            self.assistant.close_document(document_id),
+        );
+        match (translation, assistant) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(translation), Err(assistant)) => Err(AtlasError {
+                message: format!(
+                    "{}; Reading Assistant cleanup also failed: {}",
+                    translation.message, assistant.message
+                ),
+                ..translation
+            }),
+        }
     }
 
     async fn rollback_open(&self, session_id: &SessionId, document_id: &DocumentId, created: bool) {
@@ -198,7 +222,7 @@ impl ReadingSessionModule for DefaultReadingSession {
             }
             drop(registry);
             if pending_cleanup {
-                self.translator.close_document(&document_id).await?;
+                self.close_document_modules(&document_id).await?;
                 let mut registry = self.registry.lock().await;
                 if !registry.sessions.contains_key(&session_id) {
                     return Err(AtlasError::not_found("reading session was not found"));
@@ -217,7 +241,7 @@ impl ReadingSessionModule for DefaultReadingSession {
                 Err(error) => {
                     self.rollback_open(&session_id, &document_id, false).await;
                     if pending_cleanup
-                        && let Err(cleanup) = self.translator.close_document(&document_id).await
+                        && let Err(cleanup) = self.close_document_modules(&document_id).await
                     {
                         return Err(AtlasError {
                             message: format!(
@@ -273,7 +297,7 @@ impl ReadingSessionModule for DefaultReadingSession {
             Err(error) => {
                 self.rollback_open(&session_id, &input.document_id, true)
                     .await;
-                if let Err(cleanup) = self.translator.close_document(&input.document_id).await {
+                if let Err(cleanup) = self.close_document_modules(&input.document_id).await {
                     return Err(AtlasError {
                         message: format!(
                             "{}; translation cleanup also failed: {}",
@@ -333,37 +357,40 @@ impl ReadingSessionModule for DefaultReadingSession {
         let rejection = apply_command(&mut candidate, command.clone());
         let document_id = candidate.document_id.clone();
         drop(registry);
-        let translation_result = if rejection.is_none() {
+        let action_result = if rejection.is_none() {
             match command {
-                ReadingCommand::FocusChapter { chapter_id } => {
-                    self.translator
-                        .ensure(EnsureTranslationInput {
-                            session_id: session_id.clone(),
-                            document_id,
-                            focused_chapter_id: chapter_id,
-                        })
-                        .await
-                }
-                ReadingCommand::RetryTranslation { chapter_id } => {
-                    self.translator
-                        .retry(RetryTranslationInput {
-                            session_id: session_id.clone(),
-                            document_id,
-                            chapter_id,
-                        })
-                        .await
-                }
-                ReadingCommand::ReadingAssistant { .. } => Err(
-                    AtlasError::provider_not_configured("Reading Assistant is not available yet"),
-                ),
+                ReadingCommand::FocusChapter { chapter_id } => self
+                    .translator
+                    .ensure(EnsureTranslationInput {
+                        session_id: session_id.clone(),
+                        document_id,
+                        focused_chapter_id: chapter_id,
+                    })
+                    .await
+                    .map(|translation| candidate.translation = translation),
+                ReadingCommand::RetryTranslation { chapter_id } => self
+                    .translator
+                    .retry(RetryTranslationInput {
+                        session_id: session_id.clone(),
+                        document_id,
+                        chapter_id,
+                    })
+                    .await
+                    .map(|translation| candidate.translation = translation),
+                ReadingCommand::ReadingAssistant { command } => self
+                    .assistant
+                    .dispatch(DispatchReadingAssistantInput {
+                        session_id: session_id.clone(),
+                        document_id,
+                        command,
+                    })
+                    .await
+                    .map(|snapshot| candidate.reading_assistant = snapshot),
             }
         } else {
-            Ok(candidate.translation.clone())
+            Ok(())
         };
-        let rejection = rejection.or_else(|| translation_result.as_ref().err().cloned());
-        if let Ok(translation) = translation_result {
-            candidate.translation = translation;
-        }
+        let rejection = rejection.or_else(|| action_result.err());
         if rejection.is_none() {
             candidate.revision = current_revision.saturating_add(1);
         }
@@ -405,9 +432,7 @@ impl ReadingSessionModule for DefaultReadingSession {
         }
         *subscribers = 0;
         drop(registry);
-        self.translator
-            .close_document(&snapshot.document_id)
-            .await?;
+        self.close_document_modules(&snapshot.document_id).await?;
 
         let mut registry = self.registry.lock().await;
         registry.sessions.remove(session_id);
@@ -485,8 +510,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use atlas_domain::{
-        CanonicalChapter, CanonicalDocument, ChapterId, ChapterRole, ParseSnapshot,
+        CanonicalChapter, CanonicalDocument, ChapterId, ChapterRole, ConversationId, ParseSnapshot,
         ParsedDocumentView, ParserIdentity, ProviderState, ReadingAssistantCommand,
+        ReadingAssistantSnapshot, ReadingMessageId,
     };
     use atlas_translation::{EnsureTranslationInput, RetryTranslationInput};
 
@@ -760,11 +786,57 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
+    struct TestReadingAssistantModule {
+        snapshot: Mutex<ReadingAssistantSnapshot>,
+        dispatch_calls: AtomicUsize,
+        view_calls: AtomicUsize,
+        close_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ReadingAssistantModule for TestReadingAssistantModule {
+        async fn dispatch(
+            &self,
+            input: DispatchReadingAssistantInput,
+        ) -> Result<ReadingAssistantSnapshot, AtlasError> {
+            self.dispatch_calls.fetch_add(1, Ordering::SeqCst);
+            let mut snapshot = self.snapshot.lock().await;
+            match input.command {
+                ReadingAssistantCommand::ClearConversation => {
+                    *snapshot = ReadingAssistantSnapshot::default();
+                }
+                _ => {
+                    snapshot.conversation_id = Some(ConversationId::from("conversation-1"));
+                }
+            }
+            Ok(snapshot.clone())
+        }
+
+        async fn view(
+            &self,
+            _document_id: &DocumentId,
+        ) -> Result<ReadingAssistantSnapshot, AtlasError> {
+            self.view_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.snapshot.lock().await.clone())
+        }
+
+        async fn recover(&self) -> Result<usize, AtlasError> {
+            Ok(0)
+        }
+
+        async fn close_document(&self, _document_id: &DocumentId) -> Result<(), AtlasError> {
+            self.close_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
     fn module() -> DefaultReadingSession {
         DefaultReadingSession::new(
             Arc::new(TestProviderStatus),
             Arc::new(TestParseModule),
             Arc::new(TestTranslationModule),
+            Arc::new(TestReadingAssistantModule::default()),
         )
     }
 
@@ -852,6 +924,7 @@ mod tests {
             Arc::new(TestProviderStatus),
             Arc::new(FlakyParseModule::default()),
             Arc::new(TestTranslationModule),
+            Arc::new(TestReadingAssistantModule::default()),
         );
         let input = OpenSessionInput {
             document_id: DocumentId::from("document-1"),
@@ -883,6 +956,7 @@ mod tests {
             Arc::new(TestProviderStatus),
             Arc::new(FixedParsedDocument(parsed_document("new-chapter"))),
             Arc::new(TestTranslationModule),
+            Arc::new(TestReadingAssistantModule::default()),
         );
 
         let opened = module
@@ -906,10 +980,12 @@ mod tests {
     #[tokio::test]
     async fn snapshot_refresh_reads_translation_without_reasserting_foreground_intent() {
         let translator = Arc::new(CountingTranslationModule::default());
+        let assistant = Arc::new(TestReadingAssistantModule::default());
         let module = DefaultReadingSession::new(
             Arc::new(TestProviderStatus),
             Arc::new(FixedParsedDocument(parsed_document("chapter-1"))),
             translator.clone(),
+            assistant.clone(),
         );
         let opened = module
             .open(OpenSessionInput {
@@ -925,6 +1001,7 @@ mod tests {
 
         assert_eq!(translator.ensure_calls.load(Ordering::SeqCst), 1);
         assert_eq!(translator.view_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(assistant.view_calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -999,8 +1076,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assistant_contract_is_rejected_without_mutating_session_until_module_is_wired() {
-        let module = module();
+    async fn assistant_command_routes_through_session_and_updates_snapshot_revision() {
+        let assistant = Arc::new(TestReadingAssistantModule::default());
+        let module = DefaultReadingSession::new(
+            Arc::new(TestProviderStatus),
+            Arc::new(TestParseModule),
+            Arc::new(TestTranslationModule),
+            assistant.clone(),
+        );
         let opened = module
             .open(OpenSessionInput {
                 document_id: DocumentId::from("document-1"),
@@ -1015,25 +1098,27 @@ mod tests {
                 CommandId::from("assistant-command"),
                 Some(0),
                 ReadingCommand::ReadingAssistant {
-                    command: ReadingAssistantCommand::ClearConversation,
+                    command: ReadingAssistantCommand::RetryResponse {
+                        user_message_id: ReadingMessageId::from("reader-1"),
+                    },
                 },
             )
             .await
             .expect("assistant command should return a receipt");
 
-        assert_eq!(receipt.status, CommandStatus::Rejected);
-        assert_eq!(receipt.revision, 0);
-        assert_eq!(
-            receipt.rejection.expect("rejection should exist").code,
-            atlas_domain::AtlasErrorCode::ProviderNotConfigured
-        );
+        assert_eq!(receipt.status, CommandStatus::Accepted);
+        assert_eq!(receipt.revision, 1);
+        assert_eq!(assistant.dispatch_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             module
                 .snapshot(&opened.session_id)
                 .await
                 .expect("snapshot should remain readable")
-                .reading_assistant,
-            atlas_domain::ReadingAssistantSnapshot::default()
+                .reading_assistant
+                .conversation_id
+                .as_ref()
+                .map(ConversationId::as_str),
+            Some("conversation-1")
         );
     }
 
@@ -1075,7 +1160,13 @@ mod tests {
 
     #[tokio::test]
     async fn close_releases_session_state() {
-        let module = module();
+        let assistant = Arc::new(TestReadingAssistantModule::default());
+        let module = DefaultReadingSession::new(
+            Arc::new(TestProviderStatus),
+            Arc::new(TestParseModule),
+            Arc::new(TestTranslationModule),
+            assistant.clone(),
+        );
         let input = OpenSessionInput {
             document_id: DocumentId::from("document-1"),
             initial_chapter_id: None,
@@ -1105,15 +1196,18 @@ mod tests {
         assert!(!reopened.restored);
         assert_ne!(first.session_id, reopened.session_id);
         assert_eq!(reopened.snapshot.revision, 0);
+        assert_eq!(assistant.close_calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
     async fn failed_final_cleanup_leaves_zero_subscribers_and_is_retried_on_open() {
         let translator = Arc::new(FlakyCloseTranslationModule::default());
+        let assistant = Arc::new(TestReadingAssistantModule::default());
         let module = DefaultReadingSession::new(
             Arc::new(TestProviderStatus),
             Arc::new(TestParseModule),
             translator.clone(),
+            assistant.clone(),
         );
         let input = OpenSessionInput {
             document_id: DocumentId::from("document-1"),
@@ -1128,6 +1222,7 @@ mod tests {
             .close(&opened.session_id)
             .await
             .expect_err("first cleanup should fail");
+        assert_eq!(assistant.close_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             module
                 .registry
@@ -1145,6 +1240,7 @@ mod tests {
             .expect("opening again should retry pending cleanup");
         assert_eq!(reopened.session_id, opened.session_id);
         assert_eq!(translator.close_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(assistant.close_calls.load(Ordering::SeqCst), 2);
         module
             .close(&reopened.session_id)
             .await

@@ -2986,6 +2986,10 @@ OpenAI-compatible：
 - 未知和损坏 Citation Marker。
 - Chat 取消与 inactivity timeout。
 
+真实 Reading Chat 合同测试由 `ATLAS_LIVE_READING_CHAT=1` 显式门控，只发送合成选区和
+问题，在内存中验证文本流、`stop` 终态与 allowlist Citation Marker。测试不打印或保存模型回答
+Fixture，也不进入默认离线套件。
+
 ### 29.4 PDF Fixture
 
 测试集至少包含：
@@ -3243,7 +3247,7 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
 - 每篇论文至多一个本地持久 Reading Conversation，在首条消息时创建。
 - 回答取消、失败重试和崩溃恢复。
 - Citation Marker 校验、块定位和 PDF 页跳转。
-- 对话请求预览与本地清理。
+- 对话请求范围提示与本地清理。
 
 退出条件：
 
@@ -3251,9 +3255,9 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
 - 重开论文后对话、选区上下文和引用可恢复。
 - 取消与重试不会重复 User Message 或修改 Translation。
 - 每个可点击引用都能定位到当前论文中实际发送过的块。
-- 请求预览准确显示选区、上下文块数和会话轮数。
+- 界面明确提示会发送选区、对应原文、邻近块和最多四轮成功历史。
 
-进展（2026-07-31）：**核心 Module 已完成，ReadingSession 与 UI 尚未接线**。
+进展（2026-07-31）：**已完成**。
 
 - Rust 与生成 TypeScript 合同已完成：嵌套 Reading Assistant Command、UTF-16 Selection
   Input、Reader/Assistant Message 判别联合、重试关系、Citation Target 和 Session schema v3。
@@ -3266,7 +3270,17 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
 - `DefaultReadingAssistantModule` 已完成：发送前选区重验证和请求预算、消息先持久化后调用、
   `tiktoken-rs` 预算、4 个完整历史轮次、节流且带 trailing flush 的流式 checkpoint、原子取消、
   失败重试、清空、崩溃恢复和 Citation Target 映射。
-- 待完成：ReadingSession/Tauri 接线、左侧 Chat UI 和 Phase 4 全量验证。
+- ReadingSession/Tauri 接线已完成：不新增浅层 IPC，现有 `reading_session_dispatch` 路由嵌套
+  Assistant Command，Snapshot 只读恢复对话，最终 Session close 同时取消 Translation 与 Chat；
+  桌面启动应用 migration 0006、恢复中断回答并组装生产 Store/Adapter。
+- React 左侧 Assistant 已完成：结构化译文 UTF-16 选区映射、跨输入焦点持久高亮、Selection
+  Context 卡片、纯文本流式消息、取消、最新失败尝试重试、清空和文档级恢复。
+- Session Command 使用同一串行队列与 revision 对账；轮询不会覆盖动作错误、用户上滚位置或新选区，
+  已接受命令在 Snapshot 暂时失败时转入只读恢复，避免重复发送。
+- Citation 主操作定位结构块并持久高亮，PDF 操作在 Viewer 页数可用后跳页；无 Citation 的完整回答
+  显示明确提示。
+- 合同漂移、严格 Clippy、Rust/SQLite/HTTP/React 回归、完整 `pnpm validate`、真实本地
+  OpenAI-compatible Reading Chat 合同测试和 Release `.app` migration 1-6 启动验证均通过。
 
 ### 31.6 Phase 5：硬化与 Alpha，2 周
 

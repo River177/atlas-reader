@@ -9,6 +9,7 @@ use atlas_domain::{
     PublicProviderSettings, TranslationSettingsInput,
 };
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 use crate::{
     ConnectionProbe, NormalizedEndpoint, ProbeRequest, ProviderProfile, ProviderSettingsStore,
@@ -36,6 +37,22 @@ pub trait ProviderSettingsModule: Send + Sync {
     async fn test(&self, kind: ProviderKind) -> Result<ConnectionTestResult, AtlasError>;
 
     async fn delete_secret(&self, kind: ProviderKind) -> Result<(), AtlasError>;
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedProviderConfiguration {
+    pub profile: ProviderProfile,
+    pub secret: Option<Secret>,
+}
+
+#[async_trait]
+pub trait ProviderConfigurationSource: Send + Sync {
+    /// Reads the endpoint profile and its effective credential under the same
+    /// transition lock used by settings writes.
+    async fn resolve(
+        &self,
+        kind: ProviderKind,
+    ) -> Result<Option<ResolvedProviderConfiguration>, AtlasError>;
 }
 
 pub struct DefaultProviderSettings {
@@ -79,49 +96,76 @@ impl DefaultProviderSettings {
             .find(|profile| profile.kind == kind))
     }
 
-    fn stored_secret(&self, kind: ProviderKind) -> Result<Option<Secret>, AtlasError> {
-        self.secrets.get(&secret_account(kind))
+    fn effective_secret(
+        &self,
+        kind: ProviderKind,
+        profile: Option<&ProviderProfile>,
+    ) -> Result<Option<Secret>, AtlasError> {
+        let stable_account = secret_account(kind);
+        let account = profile
+            .map(|profile| profile.secret_account.as_str())
+            .unwrap_or(&stable_account);
+        self.secrets.get(account)
     }
 
-    /// Moves the credential and the endpoint together. If the database refuses
-    /// the profile the previous credential is put back, because an endpoint left
-    /// paired with a newer key would send that key to the wrong provider.
+    /// A supplied credential is written to a fresh account before the profile
+    /// atomically points at it. A crash can therefore leave an unreachable
+    /// orphan, but can never pair a new key with the previous endpoint.
     async fn commit(
         &self,
-        profile: &ProviderProfile,
+        mut profile: ProviderProfile,
         supplied_key: Option<Secret>,
     ) -> Result<(), AtlasError> {
         let saved_at = now_ms()?;
-        let replaced = match supplied_key {
-            None => None,
+        let previous_profile = self.profile(profile.kind).await?;
+        let stable_account = secret_account(profile.kind);
+        let previous_account = previous_profile
+            .as_ref()
+            .map(|previous| previous.secret_account.clone())
+            .unwrap_or_else(|| stable_account.clone());
+        let new_account = match supplied_key {
+            None => {
+                profile.secret_account = previous_profile
+                    .as_ref()
+                    .map(|previous| previous.secret_account.clone())
+                    .unwrap_or_else(|| versioned_secret_account(profile.kind));
+                None
+            }
             Some(key) => {
-                // Snapshots durable storage, not the effective credential: an
-                // override that only shadows reads must never be written back
-                // into the keychain by a rollback.
-                let previous = self.secrets.stored(&profile.secret_account)?;
-                self.secrets.set(&profile.secret_account, &key)?;
-                Some(previous)
+                let account = versioned_secret_account(profile.kind);
+                self.secrets.set(&account, &key)?;
+                profile.secret_account = account.clone();
+                Some(account)
             }
         };
 
-        match self.store.save_profile(profile, saved_at).await {
-            Ok(()) => Ok(()),
+        match self.store.save_profile(&profile, saved_at).await {
+            Ok(()) => {
+                if previous_account != profile.secret_account
+                    && let Err(cleanup) = self.secrets.delete(&previous_account)
+                {
+                    return Err(AtlasError::storage(format!(
+                        "Provider settings were saved, but the previous credential could not be removed: {}",
+                        cleanup.message
+                    )));
+                }
+                Ok(())
+            }
             Err(error) => {
-                if let Some(previous) = replaced {
-                    self.restore_secret(&profile.secret_account, previous.as_ref());
+                if let Some(account) = new_account
+                    && let Err(cleanup) = self.secrets.delete(&account)
+                {
+                    return Err(AtlasError {
+                        message: format!(
+                            "{}; the unused replacement credential also could not be removed: {}",
+                            error.message, cleanup.message
+                        ),
+                        ..error
+                    });
                 }
                 Err(error)
             }
         }
-    }
-
-    /// Best effort by design: a failed rollback must not replace the error that
-    /// made the rollback necessary.
-    fn restore_secret(&self, account: &str, previous: Option<&Secret>) {
-        let _ = match previous {
-            Some(secret) => self.secrets.set(account, secret),
-            None => self.secrets.delete(account),
-        };
     }
 
     async fn run_probe(
@@ -129,7 +173,16 @@ impl DefaultProviderSettings {
         kind: ProviderKind,
         endpoint: NormalizedEndpoint,
     ) -> ConnectionTestResult {
-        let api_key = match self.stored_secret(kind) {
+        let profile = match self.profile(kind).await {
+            Ok(profile) => profile,
+            Err(error) => {
+                return ConnectionTestResult::failed(
+                    ConnectionTestCode::Unreachable,
+                    error.message,
+                );
+            }
+        };
+        let api_key = match self.effective_secret(kind, profile.as_ref()) {
             Ok(secret) => secret,
             Err(error) => {
                 return ConnectionTestResult::failed(
@@ -151,6 +204,7 @@ impl DefaultProviderSettings {
 #[async_trait]
 impl ProviderSettingsModule for DefaultProviderSettings {
     async fn get(&self) -> Result<PublicProviderSettings, AtlasError> {
+        let _transition = self.transitions.lock().await;
         let profiles = self.store.load_profiles().await?;
         let mineru = profiles
             .iter()
@@ -161,12 +215,16 @@ impl ProviderSettingsModule for DefaultProviderSettings {
 
         Ok(PublicProviderSettings {
             mineru_endpoint: mineru.map(endpoint_url),
-            mineru_has_secret: self.stored_secret(ProviderKind::Mineru)?.is_some(),
+            mineru_has_secret: self
+                .effective_secret(ProviderKind::Mineru, mineru)?
+                .is_some(),
             mineru_automatic_cloud_parsing_enabled: mineru
                 .is_some_and(|profile| profile.automatic_cloud_parsing_enabled),
             translation_base_url: translation.map(endpoint_url),
             translation_model_id: translation.and_then(|profile| profile.model_id.clone()),
-            translation_has_secret: self.stored_secret(ProviderKind::Translation)?.is_some(),
+            translation_has_secret: self
+                .effective_secret(ProviderKind::Translation, translation)?
+                .is_some(),
             context_window_override: translation
                 .and_then(|profile| profile.context_window_override),
         })
@@ -183,7 +241,11 @@ impl ProviderSettingsModule for DefaultProviderSettings {
         };
         let account = secret_account(ProviderKind::Mineru);
         let supplied_key = validated_key(input.api_key.as_deref())?;
-        let has_secret = supplied_key.is_some() || self.secrets.get(&account)?.is_some();
+        let existing = self.profile(ProviderKind::Mineru).await?;
+        let has_secret = supplied_key.is_some()
+            || self
+                .effective_secret(ProviderKind::Mineru, existing.as_ref())?
+                .is_some();
         if input.automatic_cloud_parsing_enabled && !has_secret {
             return Err(AtlasError::invalid_input(
                 "Add a Cloud MinerU API key before enabling automatic cloud parsing",
@@ -191,7 +253,7 @@ impl ProviderSettingsModule for DefaultProviderSettings {
         }
 
         self.commit(
-            &ProviderProfile {
+            ProviderProfile {
                 kind: ProviderKind::Mineru,
                 endpoint_origin: endpoint.origin().to_owned(),
                 base_path: endpoint.base_path().to_owned(),
@@ -232,7 +294,7 @@ impl ProviderSettingsModule for DefaultProviderSettings {
         let supplied_key = validated_key(input.api_key.as_deref())?;
 
         self.commit(
-            &ProviderProfile {
+            ProviderProfile {
                 kind: ProviderKind::Translation,
                 endpoint_origin: endpoint.origin().to_owned(),
                 base_path: endpoint.base_path().to_owned(),
@@ -273,26 +335,52 @@ impl ProviderSettingsModule for DefaultProviderSettings {
         // The switch goes off before the credential does. A stored key with
         // automatic parsing off is harmless, but the reverse order would leave
         // every later import trying to reach Cloud MinerU without a key.
+        let profile = self.profile(kind).await?;
         if kind == ProviderKind::Mineru
-            && let Some(profile) = self.profile(kind).await?
+            && let Some(profile) = profile.as_ref()
             && profile.automatic_cloud_parsing_enabled
         {
             self.store
                 .save_profile(
                     &ProviderProfile {
                         automatic_cloud_parsing_enabled: false,
-                        ..profile
+                        ..profile.clone()
                     },
                     now_ms()?,
                 )
                 .await?;
         }
-        self.secrets.delete(&secret_account(kind))
+        let stable_account = secret_account(kind);
+        self.secrets.delete(
+            profile
+                .as_ref()
+                .map(|profile| profile.secret_account.as_str())
+                .unwrap_or(&stable_account),
+        )
+    }
+}
+
+#[async_trait]
+impl ProviderConfigurationSource for DefaultProviderSettings {
+    async fn resolve(
+        &self,
+        kind: ProviderKind,
+    ) -> Result<Option<ResolvedProviderConfiguration>, AtlasError> {
+        let _transition = self.transitions.lock().await;
+        let Some(profile) = self.profile(kind).await? else {
+            return Ok(None);
+        };
+        let secret = self.secrets.get(&profile.secret_account)?;
+        Ok(Some(ResolvedProviderConfiguration { profile, secret }))
     }
 }
 
 fn endpoint_url(profile: &ProviderProfile) -> String {
     format!("{}{}", profile.endpoint_origin, profile.base_path)
+}
+
+fn versioned_secret_account(kind: ProviderKind) -> String {
+    format!("{}__{}", secret_account(kind), Uuid::new_v4().simple())
 }
 
 fn validated_key(api_key: Option<&str>) -> Result<Option<Secret>, AtlasError> {

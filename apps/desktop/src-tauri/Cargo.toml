@@ -18,9 +18,11 @@ atlas-adapters = { path = "../../../crates/atlas-adapters" }
 atlas-contracts = { path = "../../../crates/atlas-contracts" }
 atlas-document-reader = { path = "../../../crates/atlas-document-reader" }
 atlas-library = { path = "../../../crates/atlas-library" }
+atlas-parse = { path = "../../../crates/atlas-parse" }
 atlas-provider-settings = { path = "../../../crates/atlas-provider-settings" }
 atlas-reading-session = { path = "../../../crates/atlas-reading-session" }
 atlas-storage = { path = "../../../crates/atlas-storage" }
+atlas-translation = { path = "../../../crates/atlas-translation" }
 serde.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2.7.2"

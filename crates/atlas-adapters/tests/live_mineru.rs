@@ -18,12 +18,11 @@
 
 use std::time::Duration;
 
-use atlas_adapters::{HttpConnectionProbe, MacOsKeychainAdapter};
+use atlas_adapters::HttpConnectionProbe;
 use atlas_domain::{ConnectionTestCode, ProviderKind};
-use atlas_provider_settings::{
-    ConnectionProbe, EnvironmentSecretOverride, ProbeRequest, Secret, SecretStore, normalize,
-    secret_account,
-};
+use atlas_provider_settings::{ConnectionProbe, ProbeRequest, Secret, normalize};
+
+mod support;
 
 const BASE_URL: &str = "https://mineru.net/api/v4";
 
@@ -31,10 +30,10 @@ fn enabled() -> bool {
     std::env::var("ATLAS_LIVE_MINERU").as_deref() == Ok("1")
 }
 
-fn stored_key() -> Option<Secret> {
-    EnvironmentSecretOverride::new(MacOsKeychainAdapter::new())
-        .get(&secret_account(ProviderKind::Mineru))
-        .expect("the keychain should be readable")
+async fn stored_key() -> Option<Secret> {
+    support::effective_provider_secret(ProviderKind::Mineru)
+        .await
+        .expect("the configured credential should be readable")
 }
 
 fn request(api_key: Option<Secret>) -> ProbeRequest {
@@ -55,7 +54,7 @@ async fn the_stored_key_is_accepted_by_cloud_mineru() {
         eprintln!("skipping: set ATLAS_LIVE_MINERU=1 to run");
         return;
     }
-    let Some(api_key) = stored_key() else {
+    let Some(api_key) = stored_key().await else {
         panic!("no Cloud MinerU key in the keychain; save one in Atlas settings first");
     };
 

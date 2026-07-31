@@ -109,14 +109,22 @@ impl SecretStore for InMemorySecretStore {
 
 /// Environment variable that shadows the stored entry for `account`.
 ///
-/// `atlas.cloud_mineru` becomes `ATLAS_CLOUD_MINERU`. The `atlas.` prefix is
-/// required and the remainder must be lowercase, which keeps the mapping
-/// injective and confines it to Atlas's own namespace: no account can address
-/// `PATH`, `HOME`, or any other variable Atlas does not own, and no two
-/// accounts can name the same variable.
+/// `atlas.cloud_mineru` becomes `ATLAS_CLOUD_MINERU`. Versioned accounts for
+/// that same provider intentionally share its override. The `atlas.` prefix is
+/// required and the provider name must be lowercase, so no account can address
+/// `PATH`, `HOME`, or any variable Atlas does not own.
 #[must_use]
 pub fn secret_env_var(account: &str) -> Option<String> {
     let suffix = account.strip_prefix("atlas.")?;
+    let suffix = suffix
+        .rsplit_once("__")
+        .filter(|(_, version)| {
+            version.len() == 32
+                && version
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+        })
+        .map_or(suffix, |(provider, _)| provider);
     let usable = !suffix.is_empty()
         && suffix.starts_with(|character: char| character.is_ascii_lowercase())
         && suffix.chars().all(|character| {
@@ -262,6 +270,10 @@ mod tests {
         );
         assert_eq!(
             secret_env_var(&secret_account(ProviderKind::Translation)).as_deref(),
+            Some("ATLAS_OPENAI_COMPATIBLE")
+        );
+        assert_eq!(
+            secret_env_var("atlas.openai_compatible__0123456789abcdef0123456789abcdef").as_deref(),
             Some("ATLAS_OPENAI_COMPATIBLE")
         );
     }

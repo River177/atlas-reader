@@ -131,6 +131,15 @@ impl AtlasError {
     }
 
     #[must_use]
+    pub fn provider_not_configured(message: impl Into<String>) -> Self {
+        Self {
+            code: AtlasErrorCode::ProviderNotConfigured,
+            message: message.into(),
+            recoverable: true,
+        }
+    }
+
+    #[must_use]
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             code: AtlasErrorCode::Internal,

@@ -1,6 +1,6 @@
 use atlas_contracts::{
     AtlasError, CommandId, CommandReceipt, OpenSessionInput, OpenSessionResult, ReadingCommand,
-    SessionId,
+    SessionId, SessionSnapshot,
 };
 use serde::Deserialize;
 use tauri::State;
@@ -46,4 +46,12 @@ pub async fn reading_session_close(
     session_id: SessionId,
 ) -> Result<(), AtlasError> {
     state.reading_session.close(&session_id).await
+}
+
+#[tauri::command]
+pub async fn reading_session_snapshot(
+    state: State<'_, AppState>,
+    session_id: SessionId,
+) -> Result<SessionSnapshot, AtlasError> {
+    state.reading_session.snapshot(&session_id).await
 }

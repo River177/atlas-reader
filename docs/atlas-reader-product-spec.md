@@ -1650,12 +1650,14 @@ MinerU 不提供客户端幂等键，但提供两个足以避免重复上传的�
 
 `response_format` 的支持程度因提供方而异，不能假定：
 
-- `json_object` 在实测的全部提供方上都被接受，是可移植的收紧手段。
+- `json_object` 在实测的全部提供方上都被接受，但它要求整个响应是单个 JSON 对象，
+  与多块请求的无包装 JSON Lines 合同冲突。
 - `json_schema` 不普遍可用，只在提供方声明支持时启用。
 - 两者都不能替代字面输出契约。缺少契约时，`json_object` 只保证输出是合法 JSON，
   不保证字段名正确。
 
-适配器因此始终发送字面契约，并在可用时附加 `json_object` 作为额外约束。
+适配器因此始终发送字面契约，当前多块 JSON Lines 协议不发送 `response_format`。未来若改为
+数组或包装对象，必须同时提升 Prompt Version 和缓存键，不能只切换 Adapter 参数。
 
 ### 19.4 Prompt 规则
 
@@ -1688,15 +1690,20 @@ MinerU 不提供客户端幂等键，但提供两个足以避免重复上传的�
 8. 单个请求 JSON 默认上限 2 MB。
 9. 超限时按块边界二分批次。
 10. 提供方返回 Context Length Error 时，将批次减半后重试一次。
+11. 单个块仍然超限时只标记该块失败，其他可规划批次继续执行。
+12. 批次准入同时计算系统 Prompt、模型 ID 和 Chat Envelope；不能只让用户 JSON 满足 55%。
 
 ### 19.6 流式解析
 
 - SSE Chunk 只进入 Rust 内部 Buffer。
+- SSE 行结束同时支持 CR、LF 和 CRLF；空行才结束一个 Event，多条 `data:` 字段先合并。
+- 收到 `[DONE]` 立即结束，不等待提供方关闭长连接。
 - 解析出完整 JSON Line 后才做结构校验。
 - 校验通过的块在一个事务中写入 Translation Row。
 - 写入成功后发送 `blocks_upserted`。
 - 半行、非法 UTF-8、未知 ID 和重复 ID 不进入 UI。
 - Stream 正常结束但仍有残缺行时，将对应块标记为失败。
+- Stream 在超时或传输错误前已交付的完整记录仍然校验并提交，只修复未完成块。
 
 解析器必须容忍以下实测行为，它们在明确禁止之后仍然出现：
 
@@ -1778,7 +1785,7 @@ API Key 不进入缓存键。
 |---|---|
 | DNS 或连接失败 | 1 秒、4 秒退避，共 2 次重试 |
 | HTTP 408、502、503、504 | 2 次重试 |
-| HTTP 429 | 尊重 `Retry-After`，最长等待 60 秒，共 2 次 |
+| HTTP 429 | 尊重秒数或 HTTP-date 形式的 `Retry-After`，最长等待 60 秒，共 2 次 |
 | HTTP 401、403 | 不重试，要求更新凭据 |
 | 60 秒无 SSE 数据 | 取消并重试 1 次 |
 | Context Length Error | 批次减半并重试 1 次 |
@@ -1789,12 +1796,14 @@ API Key 不进入缓存键。
 
 ### 19.11 预取
 
-- 当前章节达到 `complete` 或 `readable` 且前台队列空闲后，创建下一章预取任务。
+- 当前章节达到 `complete` 且前台队列空闲后，创建下一章预取任务。
 - 默认模型并发数为 1。
 - 预取优先级为 10，前台翻译优先级为 100。
-- 用户打开预取章节时将任务提升为 100。
+- 用户打开预取章节时取消旧 Worker，并用独立 Job fencing 创建前台任务。
+- 任意文档的前台任务都会抢占正在执行的预取。
 - 用户打开其他论文、关闭应用或更新模型设置时取消尚未发出的预取批次。
 - 预取完成不会触发下一章的下一章。
+- 启动恢复只恢复前台任务；中断的预取等文档再次打开后按当前焦点与缓存状态重新认领。
 
 ---
 
@@ -1987,6 +1996,7 @@ CREATE TABLE provider_profiles (
 
 CREATE TABLE parse_operations (
   id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
   document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   provider_profile_id TEXT REFERENCES provider_profiles(id) ON DELETE RESTRICT,
   backend TEXT NOT NULL CHECK (
@@ -2009,9 +2019,11 @@ CREATE TABLE parse_operations (
       'status_unknown'
     )
   ),
-  progress REAL,
-  idempotency_key TEXT,
-  remote_job_id TEXT,
+  progress REAL CHECK (progress IS NULL OR (progress >= 0.0 AND progress <= 1.0)),
+  data_id TEXT NOT NULL,
+  batch_id TEXT,
+  remote_upload_url TEXT,
+  remote_download_url TEXT,
   remote_status_json TEXT,
   retry_count INTEGER NOT NULL DEFAULT 0,
   error_code TEXT,
@@ -2024,14 +2036,17 @@ CREATE TABLE parse_operations (
 CREATE INDEX parse_operations_document_idx
   ON parse_operations(document_id, created_at DESC);
 
-CREATE UNIQUE INDEX parse_operations_idempotency_idx
-  ON parse_operations(document_id, idempotency_key)
-  WHERE idempotency_key IS NOT NULL;
+CREATE INDEX parse_operations_recovery_idx
+  ON parse_operations(state, updated_at);
+
+CREATE UNIQUE INDEX parse_operations_batch_idx
+  ON parse_operations(batch_id)
+  WHERE batch_id IS NOT NULL;
 
 CREATE TABLE parse_artifacts (
   id TEXT PRIMARY KEY,
   document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  parse_operation_id TEXT NOT NULL
+  parse_operation_id TEXT NOT NULL UNIQUE
     REFERENCES parse_operations(id) ON DELETE CASCADE,
   parser_name TEXT NOT NULL,
   parser_version TEXT NOT NULL,
@@ -2053,9 +2068,11 @@ CREATE TABLE chapters (
   artifact_id TEXT NOT NULL REFERENCES parse_artifacts(id) ON DELETE CASCADE,
   document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   order_index INTEGER NOT NULL,
+  depth INTEGER NOT NULL CHECK (depth >= 1),
+  role TEXT NOT NULL CHECK (role IN ('front_matter', 'body', 'references')),
   source_title TEXT NOT NULL,
-  page_start INTEGER NOT NULL,
-  page_end INTEGER NOT NULL,
+  page_start INTEGER NOT NULL CHECK (page_start >= 1),
+  page_end INTEGER NOT NULL CHECK (page_end >= page_start),
   source_digest TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   UNIQUE (artifact_id, order_index)
@@ -2080,8 +2097,8 @@ CREATE TABLE blocks (
       'caption'
     )
   ),
-  page_start INTEGER NOT NULL,
-  page_end INTEGER NOT NULL,
+  page_start INTEGER NOT NULL CHECK (page_start >= 1),
+  page_end INTEGER NOT NULL CHECK (page_end >= page_start),
   bounding_boxes_json TEXT NOT NULL DEFAULT '[]',
   source_json TEXT NOT NULL,
   source_plain_text TEXT NOT NULL,
@@ -2302,13 +2319,14 @@ MVP 采用 Referenced File 模式，不复制用户原始 PDF 到 Application Su
 
 ### 23.2 Keychain
 
-Keychain Service 固定为 `com.atlasreader.providers`。Account 由 Provider 种类决定，
-跨升级与重装保持稳定，与 Profile ID 无关，因此切换 Profile 不会遗留孤儿凭据：
+Keychain Service 固定为 `com.atlasreader.providers`。每次替换凭据先写入新的版本化 Account，
+再由 SQLite Profile 原子切换引用。崩溃最多留下不可达孤儿凭据，不会把新 Key 发给旧 Endpoint。
+旧版无后缀 Account 保持可读：
 
 | Account | 内容 | 开发期环境变量 |
 |---|---|---|
-| `atlas.cloud_mineru` | Cloud MinerU API Key | `ATLAS_CLOUD_MINERU` |
-| `atlas.openai_compatible` | OpenAI-compatible API Key | `ATLAS_OPENAI_COMPATIBLE` |
+| `atlas.cloud_mineru__<version>` | Cloud MinerU API Key | `ATLAS_CLOUD_MINERU` |
+| `atlas.openai_compatible__<version>` | OpenAI-compatible API Key | `ATLAS_OPENAI_COMPATIBLE` |
 
 #### 开发期的 Keychain 授权弹窗
 
@@ -2323,7 +2341,7 @@ macOS 把 Keychain 条目的访问控制绑定到访问者的代码签名身份�
 
 开发期通过环境变量覆盖读取路径来绕开 Keychain，从而完全不触发弹窗。规则：
 
-- 变量名由 Account 推导：`.` 换成 `_` 后全大写。
+- 变量名由 Provider Account 推导；版本后缀不参与变量名。
 - 只覆盖读取。`set` 与 `delete` 始终作用于 Keychain，因此在覆盖生效期间写入的值不会
   改变 `get` 的返回，直到变量被取消设置。
 - 空白值视为未配置，回落到 Keychain，避免用空凭据遮蔽真实凭据。
@@ -2811,7 +2829,8 @@ OpenAI-compatible：
 
 - 项目所有者通过本机 Keychain 或 CI Secret 提供开发/测试 API Key。
 - 开发 Key 存放于 macOS Keychain，Service 为 `com.atlasreader.providers`，
-  Account 为 `atlas.cloud_mineru`，与应用运行时读取的位置一致，无需另设开发专用通道。
+  Account 由当前 Provider Profile 的 `secret_account` 指向；Live 测试从本地数据库解析同一
+  版本化 Account，无需另设开发专用通道。
 - 也可通过 `ATLAS_CLOUD_MINERU` 与 `ATLAS_OPENAI_COMPATIBLE` 环境变量提供，
   见 §23.2。这是开发期避免 Keychain 授权弹窗的推荐方式，Release 构建不读这两个变量。
 - 正式产品不复用开发 Key；每位用户配置自己的 Cloud MinerU Key。
@@ -2936,6 +2955,29 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
 - 应用中断后可以恢复远端 Job。
 - 解析结果可以驱动章节目录和双语原文列。
 
+进展（2026-07-30）：**已完成**。
+
+- `CloudParserPort` 保持 `request_upload` 与 `upload` 两阶段接口，确保 `batch_id`、`data_id`
+  和预签名上传地址在发送 PDF 字节前持久化；OSS `PUT` 不发送 `Content-Type`。
+- Parse Job 支持启动恢复、远端轮询、受限流式下载、`status_unknown`、查询既有 Batch，
+  以及必须显式确认的新 Batch 重传。若进程在上传检查点中断且远端仍为 Missing，会复用
+  原预签名地址，不申请第二个 Batch。
+- Canonical Schema 覆盖章节、段落、公式、引用、表格、图片、图注、页码和 PDF points
+  坐标；Cloud MinerU 与本地文本层使用独立 parser/normalizer 版本。
+- ZIP 解包在落盘前预检条目数、单文件大小、总展开大小和源文件比例，拒绝绝对路径、
+  `..`、链接和特殊条目，只保留结构 JSON 与经 magic bytes、扩展名和 SHA-256 校验的图片。
+- Artifact 目录先原子移动，再由 SQLite 单事务发布 active artifact、章节、块、FTS、
+  Parse Operation 和 Job Event；发布暂时失败时保留可恢复 manifest，启动后无需重新解析。
+- Reader 常驻显示解析状态，并可在 PDF 与结构化原文间切换；结构化视图含章节目录、
+  原文块、公式、表格、内容寻址图片和本地低保真降级标记。
+- 零上传、持久化先于上传、未知状态、同 URL 恢复、恶意压缩包、事务回滚、FTS、
+  本地降级、启动恢复和前端恢复操作均有自动化回归测试。
+- Keychain 或 Provider Profile 暂时不可读时，缓存与本地解析仍可用；中断的持久云任务保留，
+  配置恢复后的下一次 `ensure` 会继续原 Operation。显式远端状态重试先持久化运行态，再启动
+  后台查询，避免 UI 停留在 `status_unknown` 后停止轮询。
+- 恢复前必须匹配持久 Operation 的 Endpoint Fingerprint。Endpoint 或 Key 已切换时绝不把当前
+  凭据发送到旧地址，而是把 Operation 转为可显式重传的 `status_unknown`。
+
 ### 31.4 Phase 3：翻译闭环，3 周
 
 交付：
@@ -2954,6 +2996,23 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
 - 已缓存章节 500 ms 内显示。
 - 进程中断后从缺失块恢复。
 - 预取不会递归翻译整篇。
+
+进展（2026-07-30）：**已完成**。
+
+- Translation Module 以 `ensure`、只读 `view`、`retry` 和文档关闭为外部 Interface；轮询只读
+  投影，不会重新表达前台焦点或打断预取。Module 隐藏预算规划、Provider 调用、逐块校验、
+  局部修复、缓存激活、持久 Job、恢复、取消和下一章预取。
+- OpenAI-compatible Adapter 支持同源单次重定向、可选 Bearer、CR/LF/CRLF SSE、多 `data:`
+  字段、`[DONE]`、Header/错误体/Chunk inactivity timeout、错误分类与秒数/HTTP-date 限流。
+- 保护标记覆盖公式、引用、换行、资源以及表格行/单元格结构；目标表格保留 Cell、row span、
+  column span 与嵌套原子，不退化为扁平文本。
+- SQLite 缓存按完整 Request Digest 激活，支持 A→B→A 模型切换、部分提交、同 Job 恢复、
+  不兼容计划 supersede、缓存命中竞态的终态收口，以及关闭文档前先持久取消。
+- 前台翻译全局抢占预取；预取只在当前章完整后创建一章，不递归，也不在应用启动时自动恢复。
+- ReadingSession 自动重映射被新 Parse Artifact 替换的章节 ID，复用 Session 使用订阅计数，
+  焦点为 last-write-wins；React 通过 sequence-fenced Snapshot 对账。
+- 合成 Provider、HTTP、SQLite、恢复、取消、缓存、预取、Reader UI 与完整工作区质量门槛均有
+  自动化回归覆盖。真实 Provider 合同测试保持显式门控，不进入默认离线套件。
 
 ### 31.5 Phase 4：解释与纠错，2 周
 

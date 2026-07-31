@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{
+    Arc, Mutex, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
 
 use async_trait::async_trait;
 use atlas_domain::{
@@ -7,14 +10,68 @@ use atlas_domain::{
 };
 use atlas_provider_settings::{
     ConnectionProbe, DefaultProviderSettings, EnvironmentSecretOverride, InMemorySecretStore,
-    ProbeRequest, ProviderProfile, ProviderSettingsModule, ProviderSettingsStore,
-    ScriptedConnectionProbe, Secret, SecretStore, secret_account,
+    ProbeRequest, ProviderConfigurationSource, ProviderProfile, ProviderSettingsModule,
+    ProviderSettingsStore, ScriptedConnectionProbe, Secret, SecretStore, secret_account,
 };
+use tokio::sync::Notify;
 
 #[derive(Debug, Default)]
 struct InMemoryProviderSettingsStore {
     profiles: Mutex<Vec<(ProviderProfile, u64)>>,
     reject_writes: Mutex<bool>,
+}
+
+struct PausingProviderSettingsStore {
+    profile: Mutex<Option<ProviderProfile>>,
+    pause_next_save: AtomicBool,
+    save_started: Notify,
+    release_save: Notify,
+}
+
+impl PausingProviderSettingsStore {
+    fn new(profile: ProviderProfile) -> Self {
+        Self {
+            profile: Mutex::new(Some(profile)),
+            pause_next_save: AtomicBool::new(true),
+            save_started: Notify::new(),
+            release_save: Notify::new(),
+        }
+    }
+
+    fn empty() -> Self {
+        Self {
+            profile: Mutex::new(None),
+            pause_next_save: AtomicBool::new(true),
+            save_started: Notify::new(),
+            release_save: Notify::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl ProviderSettingsStore for PausingProviderSettingsStore {
+    async fn load_profiles(&self) -> Result<Vec<ProviderProfile>, AtlasError> {
+        Ok(self
+            .profile
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .into_iter()
+            .collect())
+    }
+
+    async fn save_profile(
+        &self,
+        profile: &ProviderProfile,
+        _saved_at: u64,
+    ) -> Result<(), AtlasError> {
+        if self.pause_next_save.swap(false, Ordering::SeqCst) {
+            self.save_started.notify_one();
+            self.release_save.notified().await;
+        }
+        *self.profile.lock().unwrap_or_else(PoisonError::into_inner) = Some(profile.clone());
+        Ok(())
+    }
 }
 
 impl InMemoryProviderSettingsStore {
@@ -259,11 +316,7 @@ async fn an_omitted_api_key_keeps_the_stored_credential() {
     );
     assert!(settings.mineru_has_secret);
     assert_eq!(
-        harness
-            .secrets
-            .get(&secret_account(ProviderKind::Mineru))
-            .expect("secret lookup should succeed")
-            .map(|secret| secret.expose().to_owned()),
+        stored_key(&harness, ProviderKind::Mineru),
         Some("key-1".to_owned())
     );
 }
@@ -524,11 +577,7 @@ async fn providers_keep_separate_credentials() {
     assert!(!settings.mineru_has_secret);
     assert!(settings.translation_has_secret);
     assert_eq!(
-        harness
-            .secrets
-            .get(&secret_account(ProviderKind::Translation))
-            .expect("secret lookup should succeed")
-            .map(|secret| secret.expose().to_owned()),
+        stored_key(&harness, ProviderKind::Translation),
         Some("key-translation".to_owned())
     );
 }
@@ -670,9 +719,18 @@ async fn a_rejected_switch_write_keeps_the_credential_deletable() {
 }
 
 fn stored_key(harness: &Harness, kind: ProviderKind) -> Option<String> {
+    let account = harness
+        .store
+        .profiles
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .find(|(profile, _)| profile.kind == kind)
+        .map(|(profile, _)| profile.secret_account.clone())
+        .unwrap_or_else(|| secret_account(kind));
     harness
         .secrets
-        .get(&secret_account(kind))
+        .get(&account)
         .expect("secret lookup should succeed")
         .map(|secret| secret.expose().to_owned())
 }
@@ -729,4 +787,186 @@ async fn a_rejected_write_restores_the_stored_key_not_the_override() {
         Some("keychain-key".to_owned()),
         "the rollback must restore the durable credential"
     );
+}
+
+#[tokio::test]
+async fn runtime_resolution_never_pairs_a_new_key_with_the_previous_endpoint() {
+    let account = secret_account(ProviderKind::Translation);
+    let store = Arc::new(PausingProviderSettingsStore::new(ProviderProfile {
+        kind: ProviderKind::Translation,
+        endpoint_origin: "https://old.example.com".to_owned(),
+        base_path: "/v1".to_owned(),
+        endpoint_fingerprint: "old-fingerprint".to_owned(),
+        model_id: Some("old-model".to_owned()),
+        context_window_override: None,
+        automatic_cloud_parsing_enabled: false,
+        secret_account: account.clone(),
+    }));
+    let secrets = Arc::new(InMemorySecretStore::new());
+    secrets
+        .set(&account, &Secret::new("old-key"))
+        .expect("old key should seed");
+    let module = Arc::new(DefaultProviderSettings::new(
+        store.clone() as Arc<dyn ProviderSettingsStore>,
+        secrets as Arc<dyn SecretStore>,
+        Arc::new(ScriptedConnectionProbe::new([])),
+    ));
+    let saving = {
+        let module = module.clone();
+        tokio::spawn(async move {
+            module
+                .save_translation(TranslationSettingsInput {
+                    base_url: "https://new.example.com/v1".to_owned(),
+                    api_key: Some("new-key".to_owned()),
+                    model_id: "new-model".to_owned(),
+                    context_window_override: None,
+                })
+                .await
+        })
+    };
+    store.save_started.notified().await;
+    let resolving = {
+        let module = module.clone();
+        tokio::spawn(async move {
+            module
+                .resolve(ProviderKind::Translation)
+                .await
+                .expect("runtime resolution should succeed")
+                .expect("translation should remain configured")
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert!(
+        !resolving.is_finished(),
+        "runtime reads must wait while the key and endpoint transition"
+    );
+
+    store.release_save.notify_one();
+    saving
+        .await
+        .expect("save task should join")
+        .expect("save should succeed");
+    let resolved = resolving.await.expect("resolve task should join");
+
+    assert_eq!(resolved.profile.endpoint_origin, "https://new.example.com");
+    assert_eq!(
+        resolved.secret.as_ref().map(Secret::expose),
+        Some("new-key")
+    );
+}
+
+#[tokio::test]
+async fn cancelling_a_save_keeps_the_previous_endpoint_and_key_paired() {
+    let account = secret_account(ProviderKind::Translation);
+    let store = Arc::new(PausingProviderSettingsStore::new(ProviderProfile {
+        kind: ProviderKind::Translation,
+        endpoint_origin: "https://old.example.com".to_owned(),
+        base_path: "/v1".to_owned(),
+        endpoint_fingerprint: "old-fingerprint".to_owned(),
+        model_id: Some("old-model".to_owned()),
+        context_window_override: None,
+        automatic_cloud_parsing_enabled: false,
+        secret_account: account.clone(),
+    }));
+    let secrets = Arc::new(InMemorySecretStore::new());
+    secrets
+        .set(&account, &Secret::new("old-key"))
+        .expect("old key should seed");
+    let module = Arc::new(DefaultProviderSettings::new(
+        store.clone() as Arc<dyn ProviderSettingsStore>,
+        secrets as Arc<dyn SecretStore>,
+        Arc::new(ScriptedConnectionProbe::new([])),
+    ));
+    let saving = {
+        let module = module.clone();
+        tokio::spawn(async move {
+            module
+                .save_translation(TranslationSettingsInput {
+                    base_url: "https://new.example.com/v1".to_owned(),
+                    api_key: Some("new-key".to_owned()),
+                    model_id: "new-model".to_owned(),
+                    context_window_override: None,
+                })
+                .await
+        })
+    };
+    store.save_started.notified().await;
+    saving.abort();
+    assert!(
+        saving
+            .await
+            .expect_err("save should be cancelled")
+            .is_cancelled()
+    );
+
+    let resolved = module
+        .resolve(ProviderKind::Translation)
+        .await
+        .expect("runtime resolution should succeed")
+        .expect("old translation profile should remain");
+    assert_eq!(resolved.profile.endpoint_origin, "https://old.example.com");
+    assert_eq!(
+        resolved.secret.as_ref().map(Secret::expose),
+        Some("old-key")
+    );
+}
+
+#[tokio::test]
+async fn cancelling_the_first_save_cannot_attach_its_key_to_a_later_endpoint() {
+    let store = Arc::new(PausingProviderSettingsStore::empty());
+    let secrets = Arc::new(InMemorySecretStore::new());
+    let module = Arc::new(DefaultProviderSettings::new(
+        store.clone() as Arc<dyn ProviderSettingsStore>,
+        secrets.clone() as Arc<dyn SecretStore>,
+        Arc::new(ScriptedConnectionProbe::new([])),
+    ));
+    let saving = {
+        let module = module.clone();
+        tokio::spawn(async move {
+            module
+                .save_translation(TranslationSettingsInput {
+                    base_url: "https://abandoned.example.com/v1".to_owned(),
+                    api_key: Some("orphaned-key".to_owned()),
+                    model_id: "model-a".to_owned(),
+                    context_window_override: None,
+                })
+                .await
+        })
+    };
+    store.save_started.notified().await;
+    saving.abort();
+    assert!(
+        saving
+            .await
+            .expect_err("save should be cancelled")
+            .is_cancelled()
+    );
+    assert!(
+        secrets
+            .get(&secret_account(ProviderKind::Translation))
+            .expect("stable account should be readable")
+            .is_none(),
+        "a cancelled first save must not populate the fallback account"
+    );
+
+    module
+        .save_translation(TranslationSettingsInput {
+            base_url: "https://later.example.com/v1".to_owned(),
+            api_key: None,
+            model_id: "model-b".to_owned(),
+            context_window_override: None,
+        })
+        .await
+        .expect("a later keyless profile should save");
+    let resolved = module
+        .resolve(ProviderKind::Translation)
+        .await
+        .expect("runtime resolution should succeed")
+        .expect("later profile should exist");
+
+    assert_eq!(
+        resolved.profile.endpoint_origin,
+        "https://later.example.com"
+    );
+    assert!(resolved.secret.is_none());
 }

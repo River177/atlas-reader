@@ -6,9 +6,12 @@ import type {
   LibraryPage,
   OpenedReaderDocument,
   OpenSessionResult,
+  ParseSnapshot,
+  ParsedDocumentView,
   PublicProviderSettings,
   ReadingPosition,
   RefreshSourcesResult,
+  SessionSnapshot,
 } from "@atlas/contracts";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -100,6 +103,33 @@ export const tauriBridge: AtlasBridge = {
       },
     });
   },
+  getParsedDocument(documentId) {
+    return invoke<ParsedDocumentView>("parse_view", {
+      input: { documentId },
+    });
+  },
+  retryRemoteParse(documentId) {
+    return invoke<ParseSnapshot>("parse_retry_remote", {
+      input: { documentId },
+    });
+  },
+  confirmParseReupload() {
+    return confirm(
+      "Cloud MinerU could not confirm the previous upload. Re-uploading may create another billable parse task. Continue?",
+      {
+        title: "Re-upload paper?",
+        kind: "warning",
+      },
+    );
+  },
+  reuploadDocument(documentId, sessionId) {
+    return invoke<ParseSnapshot>("parse_reupload", {
+      input: { documentId, sessionId },
+    });
+  },
+  parseAssetUrl(documentId, artifactId, relativePath) {
+    return convertFileSrc(`${documentId}/${artifactId}/${relativePath}`, "atlas-artifact");
+  },
   getProviderSettings() {
     return invoke<PublicProviderSettings>("provider_settings_get");
   },
@@ -121,6 +151,9 @@ export const tauriBridge: AtlasBridge = {
   },
   openReadingSession(input) {
     return invoke<OpenSessionResult>("reading_session_open", { input });
+  },
+  getReadingSessionSnapshot(sessionId) {
+    return invoke<SessionSnapshot>("reading_session_snapshot", { sessionId });
   },
   dispatchReadingCommand(input: DispatchReadingCommandInput) {
     return invoke<CommandReceipt>("reading_session_dispatch", { input });

@@ -6,9 +6,11 @@ members = [
   "crates/atlas-domain",
   "crates/atlas-document-reader",
   "crates/atlas-library",
+  "crates/atlas-parse",
   "crates/atlas-provider-settings",
   "crates/atlas-reading-session",
   "crates/atlas-storage",
+  "crates/atlas-translation",
 ]
 resolver = "2"
 

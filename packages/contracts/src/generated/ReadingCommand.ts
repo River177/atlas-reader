@@ -2,4 +2,4 @@
 import type { ChapterId } from "./ChapterId";
 import type { DocumentId } from "./DocumentId";
 
-export type ReadingCommand = { "type": "focus_chapter", chapterId: ChapterId, } | { "type": "clear_document_preferences", documentId: DocumentId, };
+export type ReadingCommand = { "type": "focus_chapter", chapterId: ChapterId, } | { "type": "clear_document_preferences", documentId: DocumentId, } | { "type": "retry_translation", chapterId: ChapterId, };

@@ -12,9 +12,10 @@ hex = "0.4.3"
 sha2 = "0.11.0"
 tokio.workspace = true
 url = "2.5"
+uuid.workspace = true
 
 [dev-dependencies]
-tokio.workspace = true
+tokio = { workspace = true, features = ["time"] }
 
 [lints]
 workspace = true

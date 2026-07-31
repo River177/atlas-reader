@@ -10,14 +10,20 @@ async-trait.workspace = true
 atlas-domain = { path = "../atlas-domain" }
 atlas-document-reader = { path = "../atlas-document-reader" }
 atlas-library = { path = "../atlas-library" }
+atlas-parse = { path = "../atlas-parse" }
 atlas-provider-settings = { path = "../atlas-provider-settings" }
+atlas-translation = { path = "../atlas-translation" }
+hex = "0.4.3"
 serde_json.workspace = true
+sha2 = "0.11.0"
 sqlx.workspace = true
+tokio = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
 lopdf = "0.44.0"
 tempfile = "3.27.0"
 tokio.workspace = true
+tokio-util = { version = "0.7.17", features = ["rt"] }
 
 [lints]
 workspace = true

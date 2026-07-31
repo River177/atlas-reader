@@ -9,9 +9,9 @@ user-supplied API key, while translation uses a user-configured OpenAI-compatibl
 
 ## Status
 
-Atlas Reader is in foundation development. The repository contains a runnable Tauri 2 desktop shell,
-a React and TypeScript frontend, Rust domain modules, SQLite migrations, generated TypeScript
-contracts, and foundational tests.
+Atlas Reader's local foundation, parsing loop, and chapter translation loop are complete. The
+repository contains a runnable Tauri 2 desktop shell, a React and TypeScript frontend, Rust domain
+modules, SQLite migrations, generated TypeScript contracts, and end-to-end slice tests.
 
 Completed vertical slices:
 
@@ -30,8 +30,29 @@ Completed vertical slices:
    never readable back through any interface, plain HTTP is accepted only for loopback endpoints,
    and the settings screen states what a paper upload would send, where, and under whose credential
    before automatic cloud parsing can be switched on.
+4. **Parsing loop** — automatically parse uncached papers with Cloud MinerU when enabled, persist
+   the remote batch before uploading, resume interrupted work without allocating a duplicate batch,
+   and fall back to the local PDF text layer on a definite remote failure. Results are normalized
+   into a provider-neutral chapter/block schema, published transactionally to SQLite and a
+   content-addressed artifact cache, and rendered as a chapter outline with structured text,
+   formulas, tables, figures, captions, and citations. Archive extraction rejects traversal, links,
+   oversized entries, and zip bombs; ambiguous remote outcomes require an explicit recovery choice.
+5. **Translation loop** — translate the focused chapter through an OpenAI-compatible streaming
+   endpoint, preserve formulas, citations, line breaks, assets, and table cell structure, validate
+   each block before publishing it, repair only failed blocks once, and cache results by source,
+   endpoint, model, prompt, mode, locale, and applicable preferences. The Translation Module owns
+   retries, partial commits, interruption recovery, foreground preemption, and one-chapter prefetch;
+   React only sends chapter intent, while polling uses a read-only projection that cannot preempt
+   work.
 
-The next vertical slice is automatic Cloud MinerU parsing of an imported paper.
+Provider credential lookup failures are non-fatal to local use: cached translations, cached parse
+artifacts, and local PDF text remain readable. Persisted cloud parse work resumes on the next
+`ensure` after the provider becomes available again. Resume requires the original endpoint
+fingerprint; changing the endpoint turns old work into an explicit re-upload choice rather than
+sending the current credential to the previous host.
+
+The next vertical slice is inline explanation and translation correction with implicit wording
+preferences.
 
 ### Cloud MinerU protocol verification
 
@@ -65,16 +86,18 @@ record with no trailing newline.
 The decisive finding is that the output field names must be pinned with a literal example. Asking
 only for "one JSON object per block" produced three mutually incompatible shapes across models.
 
-`crates/atlas-adapters/tests/live_translation.rs` pins the connection probe against a real endpoint.
-It is skipped unless `ATLAS_LIVE_TRANSLATION=1` is set:
+`crates/atlas-adapters/tests/live_translation.rs` pins both the connection probe and one synthetic
+block through the complete streaming/planning/validation protocol. It is skipped unless
+`ATLAS_LIVE_TRANSLATION=1` is set:
 
 ```sh
 ATLAS_LIVE_TRANSLATION=1 cargo test -p atlas-adapters --test live_translation
 ```
 
 Set `ATLAS_LIVE_TRANSLATION_URL` to choose the endpoint; it defaults to `http://127.0.0.1:4141/v1`.
-The credential comes from the Keychain entry the application writes, so save a translation key in
-Atlas settings first, or export `ATLAS_OPENAI_COMPATIBLE` — see [Credentials](#credentials).
+The test resolves the active profile's Keychain account from the local Atlas database. Save a
+translation key in Atlas settings first, or export `ATLAS_OPENAI_COMPATIBLE` — see
+[Credentials](#credentials). `ATLAS_APP_DATABASE_PATH` can point the test at a non-default database.
 
 ### Credentials
 
@@ -89,10 +112,14 @@ looks like a brand new application to the keychain and triggers an authorization
 
 Debug builds therefore read an environment variable before touching the keychain:
 
-| Provider          | Keychain account          | Environment variable      |
-| ----------------- | ------------------------- | ------------------------- |
-| Cloud MinerU      | `atlas.cloud_mineru`      | `ATLAS_CLOUD_MINERU`      |
-| Translation model | `atlas.openai_compatible` | `ATLAS_OPENAI_COMPATIBLE` |
+| Provider          | Keychain account                     | Environment variable      |
+| ----------------- | ------------------------------------ | ------------------------- |
+| Cloud MinerU      | `atlas.cloud_mineru__<version>`      | `ATLAS_CLOUD_MINERU`      |
+| Translation model | `atlas.openai_compatible__<version>` | `ATLAS_OPENAI_COMPATIBLE` |
+
+The profile stores the current versioned account. Replacing a key writes a fresh account before
+atomically switching the profile, so a crash can leave only an unreachable orphan; it cannot pair a
+new credential with the previous endpoint. Legacy unversioned accounts remain readable.
 
 Export them in your shell and development stops prompting:
 
@@ -134,6 +161,8 @@ crates/atlas-reading-session
                           ReadingSession interface and implementation
 crates/atlas-provider-settings
                           Provider endpoints, credentials, and connection tests
+crates/atlas-parse         Parse orchestration, canonical normalization, and safe artifacts
+crates/atlas-translation   Chapter planning, validation, caching, recovery, and prefetch
 crates/atlas-storage      SQLite migrations and storage adapters
 crates/atlas-adapters     External-provider adapters
 crates/atlas-contracts    Rust contract facade
@@ -160,8 +189,8 @@ pnpm tauri:dev
 ```
 
 `pnpm validate` runs formatting, linting, type checks, frontend tests, frontend builds, Clippy, and
-Rust tests. Cloud MinerU live tests are not part of the default suite and require an explicitly
-supplied test key.
+Rust tests. Cloud MinerU and translation live tests are not part of the default suite and require
+explicitly supplied credentials.
 
 ## License
 

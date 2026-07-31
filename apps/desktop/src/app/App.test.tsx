@@ -1,6 +1,12 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { DocumentSummary, ImportPdfResult } from "@atlas/contracts";
+import type {
+  CanonicalDocument,
+  DocumentSummary,
+  ImportPdfResult,
+  ParseSnapshot,
+  SessionSnapshot,
+} from "@atlas/contracts";
 
 import type { PdfDropEvent } from "../bridge";
 import type {
@@ -20,6 +26,98 @@ function document(overrides: Partial<DocumentSummary> = {}): DocumentSummary {
     fileName: "atlas-retrieval.pdf",
     sourceState: "available",
     lastOpenedAt: 1,
+    ...overrides,
+  };
+}
+
+function canonicalDocument(): CanonicalDocument {
+  const figureDigest = "a".repeat(64);
+  return {
+    schemaVersion: 1,
+    artifactId: "artifact-operation-1",
+    documentId: "document-1",
+    sourceSha256: "b".repeat(64),
+    parser: {
+      name: "Atlas local text",
+      version: "1",
+      backend: "local_text",
+    },
+    normalizerVersion: "1",
+    pageCount: 12,
+    title: "Atlas Retrieval",
+    assets: [
+      {
+        id: "asset-figure-1",
+        mimeType: "image/png",
+        relativePath: `images/${figureDigest}.png`,
+        sha256: figureDigest,
+        sizeBytes: 128,
+      },
+    ],
+    chapters: [
+      {
+        id: "chapter-introduction",
+        orderIndex: 0,
+        depth: 1,
+        role: "body",
+        sourceTitle: "Introduction",
+        pageStart: 1,
+        pageEnd: 2,
+        blocks: [
+          {
+            id: "block-introduction",
+            orderIndex: 0,
+            kind: "paragraph",
+            pageStart: 1,
+            pageEnd: 1,
+            boundingBoxes: [],
+            content: {
+              plainText: "Retrieval systems connect papers.",
+              atoms: [{ type: "text", value: "Retrieval systems connect papers." }],
+            },
+            sourceDigest: "intro-digest",
+          },
+        ],
+      },
+      {
+        id: "chapter-method",
+        orderIndex: 1,
+        depth: 1,
+        role: "body",
+        sourceTitle: "Method",
+        pageStart: 3,
+        pageEnd: 5,
+        blocks: [
+          {
+            id: "block-figure",
+            orderIndex: 0,
+            kind: "figure",
+            pageStart: 4,
+            pageEnd: 4,
+            boundingBoxes: [],
+            content: {
+              plainText: "Figure 1",
+              atoms: [{ type: "asset", assetId: "asset-figure-1", alt: "System overview" }],
+            },
+            sourceDigest: "figure-digest",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function parseSnapshot(
+  state: ParseSnapshot["state"],
+  overrides: Partial<ParseSnapshot> = {},
+): ParseSnapshot {
+  return {
+    state,
+    backend: null,
+    progress: null,
+    parseOperationId: "parse-operation-1",
+    automaticCloudParsingEnabled: true,
+    safeMessage: null,
     ...overrides,
   };
 }
@@ -266,6 +364,416 @@ describe("App", () => {
       });
     });
     expect(viewer.close).toHaveBeenCalledOnce();
+  });
+
+  it("renders degraded parsed structure, chapter navigation, and content-addressed assets", async () => {
+    const testBridge = bridge();
+    const paper = document();
+    vi.mocked(testBridge.queryLibrary).mockResolvedValue({ items: [paper], nextCursor: null });
+    vi.mocked(testBridge.openReader).mockResolvedValue({
+      document: paper,
+      sourceToken: "reader-token",
+      sourceUrl: "atlas-reader://localhost/pdf/reader-token",
+      position: {
+        page: 1,
+        pageOffsetRatio: 0,
+        scaleValue: "page-width",
+        updatedAt: 1,
+      },
+    });
+    vi.mocked(testBridge.getParsedDocument).mockResolvedValue({
+      parse: parseSnapshot("degraded", {
+        backend: "local_text",
+        automaticCloudParsingEnabled: false,
+      }),
+      document: canonicalDocument(),
+    });
+    const introductionSnapshot = {
+      schemaVersion: 1,
+      sessionId: "session-1",
+      documentId: "document-1",
+      revision: 0,
+      lifecycle: "degraded",
+      parseState: "degraded",
+      activeChapterId: "chapter-introduction",
+      activeJobIds: [],
+      providerStatus: {
+        mineru: "not_configured",
+        translation: "ready",
+        translationModel: "test-model",
+      },
+      translation: {
+        targetLocale: "zh-CN",
+        modelId: "test-model",
+        prefetchedChapterId: null,
+        activeChapter: {
+          chapterId: "chapter-introduction",
+          state: "complete",
+          progress: 1,
+          jobId: "translation-job-1",
+          jobActive: false,
+          prefetched: false,
+          safeMessage: null,
+          blocks: [
+            {
+              blockId: "block-introduction",
+              sourceDigest: "intro-digest",
+              state: "ready",
+              target: {
+                plainText: "检索系统连接论文。",
+                atoms: [{ type: "text", value: "检索系统连接论文。" }],
+              },
+              safeMessage: null,
+            },
+          ],
+        },
+      },
+    } satisfies SessionSnapshot;
+    vi.mocked(testBridge.getReadingSessionSnapshot)
+      .mockResolvedValueOnce(introductionSnapshot)
+      .mockResolvedValue({
+        ...introductionSnapshot,
+        revision: 1,
+        activeChapterId: "chapter-method",
+        translation: {
+          ...introductionSnapshot.translation,
+          activeChapter: null,
+        },
+      });
+    render(<App bridge={testBridge} viewerFactory={async () => new FakePdfViewer()} />);
+    await screen.findByText("Atlas Retrieval");
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+    expect(await screen.findByText("Basic parsing")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Bilingual" }));
+
+    expect(await screen.findByRole("navigation")).toHaveAccessibleName("Paper chapters");
+    expect(screen.getByText("Retrieval systems connect papers.")).toBeInTheDocument();
+    expect(await screen.findByText("检索系统连接论文。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "02Method" }));
+    await waitFor(() => {
+      expect(testBridge.dispatchReadingCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-1",
+          command: { type: "focus_chapter", chapterId: "chapter-method" },
+        }),
+      );
+    });
+    expect(screen.getByRole("img", { name: "System overview" })).toHaveAttribute(
+      "src",
+      expect.stringContaining("artifact-operation-1/images/"),
+    );
+    expect(testBridge.parseAssetUrl).toHaveBeenCalledWith(
+      "document-1",
+      "artifact-operation-1",
+      expect.stringMatching(/^images\/[a-f0-9]{64}\.png$/),
+    );
+  });
+
+  it("restores authoritative chapter focus when a focus command is rejected", async () => {
+    const testBridge = bridge();
+    const paper = document();
+    vi.mocked(testBridge.queryLibrary).mockResolvedValue({ items: [paper], nextCursor: null });
+    vi.mocked(testBridge.openReader).mockResolvedValue({
+      document: paper,
+      sourceToken: "reader-token",
+      sourceUrl: "atlas-reader://localhost/pdf/reader-token",
+      position: {
+        page: 1,
+        pageOffsetRatio: 0,
+        scaleValue: "page-width",
+        updatedAt: 1,
+      },
+    });
+    vi.mocked(testBridge.getParsedDocument).mockResolvedValue({
+      parse: parseSnapshot("ready"),
+      document: canonicalDocument(),
+    });
+    const snapshot = {
+      schemaVersion: 2,
+      sessionId: "session-1",
+      documentId: "document-1",
+      revision: 0,
+      lifecycle: "ready" as const,
+      parseState: "ready" as const,
+      activeChapterId: "chapter-introduction",
+      activeJobIds: [],
+      providerStatus: {
+        mineru: "ready" as const,
+        translation: "ready" as const,
+        translationModel: "test-model",
+      },
+      translation: {
+        targetLocale: "zh-CN",
+        modelId: "test-model",
+        activeChapter: null,
+        prefetchedChapterId: null,
+      },
+    };
+    vi.mocked(testBridge.getReadingSessionSnapshot).mockResolvedValue(snapshot);
+    vi.mocked(testBridge.dispatchReadingCommand).mockResolvedValue({
+      commandId: "focus-rejected",
+      status: "rejected",
+      revision: 0,
+      rejection: {
+        code: "invalid_input",
+        message: "Chapter cannot be focused",
+        recoverable: true,
+      },
+    });
+    render(<App bridge={testBridge} viewerFactory={async () => new FakePdfViewer()} />);
+    await screen.findByText("Atlas Retrieval");
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Bilingual" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "02Method" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "01Introduction" })).toHaveClass("is-active");
+    });
+    expect(screen.getByRole("button", { name: "02Method" })).not.toHaveClass("is-active");
+    expect(await screen.findByText("Translation status unavailable")).toHaveAttribute(
+      "title",
+      "Chapter cannot be focused",
+    );
+  });
+
+  it("continues polling when focus changes between two active translation jobs", async () => {
+    const testBridge = bridge();
+    const paper = document();
+    vi.mocked(testBridge.queryLibrary).mockResolvedValue({ items: [paper], nextCursor: null });
+    vi.mocked(testBridge.openReader).mockResolvedValue({
+      document: paper,
+      sourceToken: "reader-token",
+      sourceUrl: "atlas-reader://localhost/pdf/reader-token",
+      position: {
+        page: 1,
+        pageOffsetRatio: 0,
+        scaleValue: "page-width",
+        updatedAt: 1,
+      },
+    });
+    vi.mocked(testBridge.getParsedDocument).mockResolvedValue({
+      parse: parseSnapshot("ready"),
+      document: canonicalDocument(),
+    });
+    const activeSnapshot = (chapterId: string, revision: number): SessionSnapshot => ({
+      schemaVersion: 2,
+      sessionId: "session-1",
+      documentId: "document-1",
+      revision,
+      lifecycle: "ready",
+      parseState: "ready",
+      activeChapterId: chapterId,
+      activeJobIds: [`job-${chapterId}`],
+      providerStatus: {
+        mineru: "ready",
+        translation: "ready",
+        translationModel: "test-model",
+      },
+      translation: {
+        targetLocale: "zh-CN",
+        modelId: "test-model",
+        prefetchedChapterId: null,
+        activeChapter: {
+          chapterId,
+          state: "translating",
+          progress: 0,
+          jobId: `job-${chapterId}`,
+          jobActive: true,
+          prefetched: false,
+          safeMessage: null,
+          blocks: [],
+        },
+      },
+    });
+    const methodFocused = { current: false };
+    vi.mocked(testBridge.getReadingSessionSnapshot).mockImplementation(async () =>
+      methodFocused.current
+        ? activeSnapshot("chapter-method", 1)
+        : activeSnapshot("chapter-introduction", 0),
+    );
+    vi.mocked(testBridge.dispatchReadingCommand).mockImplementation(async (input) => {
+      methodFocused.current = true;
+      return {
+        commandId: input.commandId,
+        status: "accepted",
+        revision: 1,
+        rejection: null,
+      };
+    });
+    render(<App bridge={testBridge} viewerFactory={async () => new FakePdfViewer()} />);
+    await screen.findByText("Atlas Retrieval");
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Bilingual" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "01Introduction" })).toHaveClass("is-active");
+    });
+    await new Promise((resolve) => window.setTimeout(resolve, 900));
+
+    fireEvent.click(screen.getByRole("button", { name: "02Method" }));
+    await new Promise((resolve) => window.setTimeout(resolve, 900));
+    const callsAfterFirstPollWindow = vi.mocked(testBridge.getReadingSessionSnapshot).mock.calls
+      .length;
+    await new Promise((resolve) => window.setTimeout(resolve, 900));
+
+    expect(testBridge.getReadingSessionSnapshot).toHaveBeenCalledTimes(
+      callsAfterFirstPollWindow + 1,
+    );
+  });
+
+  it("continues polling when the already-active chapter is focused again", async () => {
+    const testBridge = bridge();
+    const paper = document();
+    vi.mocked(testBridge.queryLibrary).mockResolvedValue({ items: [paper], nextCursor: null });
+    vi.mocked(testBridge.openReader).mockResolvedValue({
+      document: paper,
+      sourceToken: "reader-token",
+      sourceUrl: "atlas-reader://localhost/pdf/reader-token",
+      position: {
+        page: 1,
+        pageOffsetRatio: 0,
+        scaleValue: "page-width",
+        updatedAt: 1,
+      },
+    });
+    vi.mocked(testBridge.getParsedDocument).mockResolvedValue({
+      parse: parseSnapshot("ready"),
+      document: canonicalDocument(),
+    });
+    const snapshot: SessionSnapshot = {
+      schemaVersion: 2,
+      sessionId: "session-1",
+      documentId: "document-1",
+      revision: 1,
+      lifecycle: "ready",
+      parseState: "ready",
+      activeChapterId: "chapter-introduction",
+      activeJobIds: ["job-introduction"],
+      providerStatus: {
+        mineru: "ready",
+        translation: "ready",
+        translationModel: "test-model",
+      },
+      translation: {
+        targetLocale: "zh-CN",
+        modelId: "test-model",
+        prefetchedChapterId: null,
+        activeChapter: {
+          chapterId: "chapter-introduction",
+          state: "translating",
+          progress: 0,
+          jobId: "job-introduction",
+          jobActive: true,
+          prefetched: false,
+          safeMessage: null,
+          blocks: [],
+        },
+      },
+    };
+    vi.mocked(testBridge.getReadingSessionSnapshot).mockResolvedValue(snapshot);
+    render(<App bridge={testBridge} viewerFactory={async () => new FakePdfViewer()} />);
+    await screen.findByText("Atlas Retrieval");
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Bilingual" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "01Introduction" })).toHaveClass("is-active");
+    });
+    await new Promise((resolve) => window.setTimeout(resolve, 900));
+
+    fireEvent.click(screen.getByRole("button", { name: "01Introduction" }));
+    await new Promise((resolve) => window.setTimeout(resolve, 900));
+    const callsAfterFirstPollWindow = vi.mocked(testBridge.getReadingSessionSnapshot).mock.calls
+      .length;
+    await new Promise((resolve) => window.setTimeout(resolve, 900));
+
+    expect(testBridge.getReadingSessionSnapshot).toHaveBeenCalledTimes(
+      callsAfterFirstPollWindow + 1,
+    );
+  });
+
+  it("requires confirmation before recovering an unknown parse by re-upload", async () => {
+    const testBridge = bridge();
+    const paper = document();
+    const unknown = parseSnapshot("status_unknown", {
+      safeMessage: "Atlas could not confirm the remote status.",
+    });
+    vi.mocked(testBridge.queryLibrary).mockResolvedValue({ items: [paper], nextCursor: null });
+    vi.mocked(testBridge.openReader).mockResolvedValue({
+      document: paper,
+      sourceToken: "reader-token",
+      sourceUrl: "atlas-reader://localhost/pdf/reader-token",
+      position: {
+        page: 1,
+        pageOffsetRatio: 0,
+        scaleValue: "page-width",
+        updatedAt: 1,
+      },
+    });
+    vi.mocked(testBridge.getParsedDocument).mockResolvedValue({
+      parse: unknown,
+      document: null,
+    });
+    vi.mocked(testBridge.retryRemoteParse).mockResolvedValue(unknown);
+    vi.mocked(testBridge.reuploadDocument).mockResolvedValue(
+      parseSnapshot("uploading", { backend: "cloud_mineru", progress: 0 }),
+    );
+    render(<App bridge={testBridge} viewerFactory={async () => new FakePdfViewer()} />);
+    await screen.findByText("Atlas Retrieval");
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+    expect(await screen.findByText("Remote status unknown")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Query remote" }));
+    await waitFor(() => {
+      expect(testBridge.retryRemoteParse).toHaveBeenCalledWith("document-1");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Re-upload" }));
+    await waitFor(() => {
+      expect(testBridge.confirmParseReupload).toHaveBeenCalledOnce();
+      expect(testBridge.reuploadDocument).toHaveBeenCalledWith("document-1", "session-1");
+    });
+  });
+
+  it("continues polling after a transient parse-status failure", async () => {
+    const testBridge = bridge();
+    const paper = document();
+    vi.mocked(testBridge.queryLibrary).mockResolvedValue({ items: [paper], nextCursor: null });
+    vi.mocked(testBridge.openReader).mockResolvedValue({
+      document: paper,
+      sourceToken: "reader-token",
+      sourceUrl: "atlas-reader://localhost/pdf/reader-token",
+      position: {
+        page: 1,
+        pageOffsetRatio: 0,
+        scaleValue: "page-width",
+        updatedAt: 1,
+      },
+    });
+    vi.mocked(testBridge.getParsedDocument)
+      .mockResolvedValueOnce({
+        parse: parseSnapshot("processing", {
+          backend: "cloud_mineru",
+          progress: 0.25,
+        }),
+        document: null,
+      })
+      .mockRejectedValueOnce(new Error("temporary storage contention"))
+      .mockResolvedValue({
+        parse: parseSnapshot("ready", {
+          backend: "cloud_mineru",
+          progress: 1,
+        }),
+        document: canonicalDocument(),
+      });
+    render(<App bridge={testBridge} viewerFactory={async () => new FakePdfViewer()} />);
+    await screen.findByText("Atlas Retrieval");
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+    expect(await screen.findByText("Cloud parsing 25%")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Cloud structure ready", undefined, { timeout: 2_500 }),
+    ).toBeInTheDocument();
+    expect(testBridge.getParsedDocument).toHaveBeenCalledTimes(3);
   });
 
   it("throttles periodic reading-position persistence", async () => {

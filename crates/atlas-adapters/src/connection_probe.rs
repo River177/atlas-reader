@@ -63,7 +63,7 @@ impl HttpConnectionProbe {
 /// redirecting to `http` on the same host would put the key on the wire in the
 /// clear. A cross-origin hop would also escape the loopback-only rule that
 /// endpoint normalization enforces, so neither is followed.
-fn same_origin_redirects(max: usize) -> Policy {
+pub(crate) fn same_origin_redirects(max: usize) -> Policy {
     Policy::custom(move |attempt: redirect::Attempt| {
         if follows_redirect(attempt.url(), attempt.previous(), max) {
             attempt.follow()

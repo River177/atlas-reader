@@ -43,6 +43,21 @@ export const browserBridge: AtlasBridge = {
   async closeReader() {
     return unavailable("closeReader");
   },
+  async getParsedDocument() {
+    return unavailable("getParsedDocument");
+  },
+  async retryRemoteParse() {
+    return unavailable("retryRemoteParse");
+  },
+  async confirmParseReupload() {
+    return false;
+  },
+  async reuploadDocument() {
+    return unavailable("reuploadDocument");
+  },
+  parseAssetUrl() {
+    return "";
+  },
   async getProviderSettings() {
     return {
       mineruEndpoint: null,
@@ -68,6 +83,9 @@ export const browserBridge: AtlasBridge = {
   },
   async openReadingSession() {
     return unavailable("openReadingSession");
+  },
+  async getReadingSessionSnapshot() {
+    return unavailable("getReadingSessionSnapshot");
   },
   async dispatchReadingCommand() {
     return unavailable("dispatchReadingCommand");

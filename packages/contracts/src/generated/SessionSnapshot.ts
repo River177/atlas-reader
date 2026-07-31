@@ -6,5 +6,6 @@ import type { ParseState } from "./ParseState";
 import type { ProviderStatusSnapshot } from "./ProviderStatusSnapshot";
 import type { SessionId } from "./SessionId";
 import type { SessionLifecycle } from "./SessionLifecycle";
+import type { TranslationSnapshot } from "./TranslationSnapshot";
 
-export type SessionSnapshot = { schemaVersion: number, sessionId: SessionId, documentId: DocumentId, revision: number, lifecycle: SessionLifecycle, parseState: ParseState, activeChapterId: ChapterId | null, activeJobIds: Array<JobId>, providerStatus: ProviderStatusSnapshot, };
+export type SessionSnapshot = { schemaVersion: number, sessionId: SessionId, documentId: DocumentId, revision: number, lifecycle: SessionLifecycle, parseState: ParseState, activeChapterId: ChapterId | null, activeJobIds: Array<JobId>, providerStatus: ProviderStatusSnapshot, translation: TranslationSnapshot, };

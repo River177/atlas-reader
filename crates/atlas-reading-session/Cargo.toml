@@ -8,6 +8,8 @@ authors.workspace = true
 [dependencies]
 async-trait.workspace = true
 atlas-domain = { path = "../atlas-domain" }
+atlas-parse = { path = "../atlas-parse" }
+atlas-translation = { path = "../atlas-translation" }
 tokio.workspace = true
 uuid.workspace = true
 

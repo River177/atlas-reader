@@ -8,17 +8,26 @@ authors.workspace = true
 [dependencies]
 async-trait.workspace = true
 atlas-domain = { path = "../atlas-domain" }
+atlas-parse = { path = "../atlas-parse" }
 atlas-provider-settings = { path = "../atlas-provider-settings" }
 atlas-reading-session = { path = "../atlas-reading-session" }
+atlas-translation = { path = "../atlas-translation" }
 keyring = "4.1.5"
+httpdate = "1.0.3"
 reqwest = { version = "0.12.28", default-features = false, features = [
   "json",
   "rustls-tls",
+  "stream",
 ] }
+serde.workspace = true
 serde_json.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
+tokio-util = { version = "0.7.17", features = ["io"] }
 
 [dev-dependencies]
-tokio.workspace = true
+sqlx.workspace = true
+tempfile = "3.27.0"
+tokio = { workspace = true, features = ["net", "time"] }
 wiremock = "0.6.5"
 
 [lints]

@@ -34,8 +34,8 @@ pub trait DocumentReaderModule: Send + Sync {
 pub struct DefaultDocumentReader {
     store: Arc<dyn ReaderStore>,
     sources: Arc<ReaderSourceRegistry>,
-    /// Serializes token issue, revoke, and position writes so a revoked token
-    /// can never persist a position after a newer session was opened.
+    /// Serializes token issue, revoke, and position writes. Multiple browser
+    /// tabs may hold independent tokens; the latest position write wins.
     transitions: Mutex<()>,
 }
 

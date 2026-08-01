@@ -12,7 +12,7 @@ use atlas_domain::{
 use scraper::{ElementRef, Html, Selector};
 use serde::Deserialize;
 
-pub const NORMALIZER_VERSION: &str = "mineru-v1";
+pub const NORMALIZER_VERSION: &str = "mineru-v2";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MineruAssetInput {
@@ -61,11 +61,19 @@ impl MineruNormalizer {
             ));
         }
 
-        let assets = validate_assets(input.assets)?;
-        let asset_by_path: HashMap<&str, &CanonicalAsset> = assets
+        let (assets, asset_ids_by_path) = validate_assets(input.assets)?;
+        let assets_by_id: HashMap<&str, &CanonicalAsset> = assets
             .iter()
-            .map(|asset| (asset.relative_path.as_str(), asset))
+            .map(|asset| (asset.id.as_str(), asset))
             .collect();
+        let mut asset_by_path = HashMap::with_capacity(asset_ids_by_path.len());
+        for (path, asset_id) in &asset_ids_by_path {
+            let asset = assets_by_id
+                .get(asset_id.as_str())
+                .copied()
+                .ok_or_else(|| AtlasError::internal("validated asset alias is unresolved"))?;
+            asset_by_path.insert(path.as_str(), asset);
+        }
         let mut builder = DocumentBuilder::new(
             input.artifact_id,
             page_sizes.len() as u32,
@@ -140,43 +148,56 @@ fn parse_page_sizes(bytes: &[u8]) -> Result<Vec<PageSize>, AtlasError> {
     Ok(pages)
 }
 
-fn validate_assets(inputs: &[MineruAssetInput]) -> Result<Vec<CanonicalAsset>, AtlasError> {
+fn validate_assets(
+    inputs: &[MineruAssetInput],
+) -> Result<(Vec<CanonicalAsset>, HashMap<String, String>), AtlasError> {
     let mut paths = HashSet::new();
-    let mut ids = HashSet::new();
-    inputs
-        .iter()
-        .map(|input| {
-            validate_sha256(&input.sha256, "asset SHA-256")?;
-            let path = Path::new(&input.relative_path);
-            if !is_safe_relative_path(path)
-                || path.components().count() != 2
-                || path
-                    .components()
-                    .next()
-                    .and_then(|part| part.as_os_str().to_str())
-                    != Some("images")
-            {
+    let mut asset_indexes = HashMap::<String, usize>::new();
+    let mut aliases = HashMap::new();
+    let mut assets = Vec::<CanonicalAsset>::new();
+    for input in inputs {
+        validate_sha256(&input.sha256, "asset SHA-256")?;
+        let path = Path::new(&input.relative_path);
+        if !is_safe_relative_path(path)
+            || path.components().count() != 2
+            || path
+                .components()
+                .next()
+                .and_then(|part| part.as_os_str().to_str())
+                != Some("images")
+        {
+            return Err(AtlasError::invalid_input(
+                "asset path must be a file directly inside images/",
+            ));
+        }
+        if input.size_bytes == 0 {
+            return Err(AtlasError::invalid_input("asset cannot be empty"));
+        }
+        if !paths.insert(input.relative_path.clone()) {
+            return Err(AtlasError::invalid_input(
+                "Cloud MinerU returned a duplicate asset path",
+            ));
+        }
+        aliases.insert(input.relative_path.clone(), input.sha256.clone());
+        if let Some(index) = asset_indexes.get(&input.sha256).copied() {
+            let existing = &assets[index];
+            if existing.mime_type != input.mime_type || existing.size_bytes != input.size_bytes {
                 return Err(AtlasError::invalid_input(
-                    "asset path must be a file directly inside images/",
+                    "identical asset hashes have conflicting metadata",
                 ));
             }
-            if input.size_bytes == 0 {
-                return Err(AtlasError::invalid_input("asset cannot be empty"));
-            }
-            if !paths.insert(input.relative_path.clone()) || !ids.insert(input.sha256.clone()) {
-                return Err(AtlasError::invalid_input(
-                    "Cloud MinerU returned duplicate assets",
-                ));
-            }
-            Ok(CanonicalAsset {
-                id: input.sha256.clone(),
-                mime_type: input.mime_type,
-                relative_path: input.relative_path.clone(),
-                sha256: input.sha256.clone(),
-                size_bytes: input.size_bytes,
-            })
-        })
-        .collect()
+            continue;
+        }
+        asset_indexes.insert(input.sha256.clone(), assets.len());
+        assets.push(CanonicalAsset {
+            id: input.sha256.clone(),
+            mime_type: input.mime_type,
+            relative_path: input.relative_path.clone(),
+            sha256: input.sha256.clone(),
+            size_bytes: input.size_bytes,
+        });
+    }
+    Ok((assets, aliases))
 }
 
 fn validate_sha256(value: &str, label: &str) -> Result<(), AtlasError> {
@@ -286,9 +307,15 @@ impl<'a> DocumentBuilder<'a> {
                 if title.is_empty() {
                     return Ok(());
                 }
-                let role = chapter_role(&title);
-                let depth = heading_depth(&title);
-                self.start_chapter(title.clone(), depth, role, page);
+                let Some(depth) = structural_heading_depth(&title) else {
+                    return self.push_block(
+                        BlockKind::Heading,
+                        page,
+                        bounding_box,
+                        structured_text(&title),
+                    );
+                };
+                self.start_chapter(title.clone(), depth, chapter_role(&title), page);
                 self.push_block(
                     BlockKind::Heading,
                     page,
@@ -667,16 +694,22 @@ fn chapter_role(title: &str) -> ChapterRole {
     }
 }
 
-fn heading_depth(title: &str) -> u32 {
-    numeric_heading_depth(title).unwrap_or(1)
+fn structural_heading_depth(title: &str) -> Option<u32> {
+    numeric_heading_depth(title)
+        .or_else(|| appendix_heading_depth(title))
+        .or_else(|| looks_like_unnumbered_heading(title).then_some(1))
 }
 
 fn numeric_heading_depth(title: &str) -> Option<u32> {
+    let title = title.trim_start();
     let prefix = title
-        .trim_start()
         .chars()
         .take_while(|character| character.is_ascii_digit() || *character == '.')
         .collect::<String>();
+    let remainder = title.get(prefix.len()..)?;
+    if remainder.is_empty() || !remainder.chars().next().is_some_and(char::is_whitespace) {
+        return None;
+    }
     let prefix = prefix.trim_end_matches('.');
     if prefix.is_empty()
         || prefix
@@ -687,6 +720,46 @@ fn numeric_heading_depth(title: &str) -> Option<u32> {
     } else {
         Some(prefix.split('.').count() as u32)
     }
+}
+
+fn appendix_heading_depth(title: &str) -> Option<u32> {
+    let title = title.trim_start();
+    let first = title.chars().next()?;
+    if !first.is_ascii_uppercase() {
+        return None;
+    }
+    let suffix = title.get(first.len_utf8()..)?;
+    if suffix.chars().next().is_some_and(char::is_whitespace) {
+        return (!suffix.trim().is_empty()).then_some(1);
+    }
+    let numbered = suffix.strip_prefix('.')?;
+    let prefix = numbered
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || *character == '.')
+        .collect::<String>();
+    let remainder = numbered.get(prefix.len()..)?;
+    if prefix.is_empty()
+        || remainder.is_empty()
+        || !remainder.chars().next().is_some_and(char::is_whitespace)
+        || prefix
+            .split('.')
+            .any(|segment| segment.is_empty() || !segment.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return None;
+    }
+    Some(prefix.split('.').count() as u32 + 1)
+}
+
+fn looks_like_unnumbered_heading(title: &str) -> bool {
+    let title = title.trim();
+    let lowercase = title.to_ascii_lowercase();
+    !title.is_empty()
+        && title.len() <= 160
+        && !title
+            .chars()
+            .last()
+            .is_some_and(|character| matches!(character, '.' | '!' | '?' | ';' | ','))
+        && !lowercase.starts_with("example ")
 }
 
 fn looks_like_list_item(text: &str) -> bool {
@@ -1045,5 +1118,60 @@ mod tests {
                 .normalize(input(missing_asset, layout(), &[]))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn appendix_depth_and_nonstructural_headings_do_not_pollute_the_outline() {
+        let content = br#"[
+          {"type":"text","text":"Synthetic paper","text_level":1,"page_idx":0},
+          {"type":"text","text":"A Related Work","text_level":2,"page_idx":0},
+          {"type":"text","text":"A.1 Safety Analysis","text_level":2,"page_idx":0},
+          {"type":"text","text":"Example A.1: Prompt","text_level":2,"page_idx":0},
+          {"type":"text","text":"malveillant.","text_level":2,"page_idx":0},
+          {"type":"text","text":"B More Results","text_level":2,"page_idx":0}
+        ]"#;
+
+        let document = MineruNormalizer::new()
+            .normalize(input(content, layout(), &[]))
+            .expect("headings should normalize");
+        let titles = document
+            .chapters
+            .iter()
+            .map(|chapter| (chapter.source_title.as_str(), chapter.depth))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            titles,
+            vec![
+                ("A Related Work", 1),
+                ("A.1 Safety Analysis", 2),
+                ("B More Results", 1),
+            ]
+        );
+        assert_eq!(document.chapters[1].blocks.len(), 3);
+    }
+
+    #[test]
+    fn identical_asset_bytes_can_have_multiple_provider_path_aliases() {
+        let hash = "a".repeat(64);
+        let (assets, aliases) = validate_assets(&[
+            MineruAssetInput {
+                relative_path: format!("images/{}.jpg", "1".repeat(64)),
+                sha256: hash.clone(),
+                mime_type: AssetMimeType::ImageJpeg,
+                size_bytes: 128,
+            },
+            MineruAssetInput {
+                relative_path: format!("images/{}.jpg", "2".repeat(64)),
+                sha256: hash.clone(),
+                mime_type: AssetMimeType::ImageJpeg,
+                size_bytes: 128,
+            },
+        ])
+        .expect("provider aliases for identical bytes should validate");
+
+        assert_eq!(assets.len(), 1);
+        assert_eq!(aliases.len(), 2);
+        assert!(aliases.values().all(|asset_id| asset_id == &hash));
     }
 }

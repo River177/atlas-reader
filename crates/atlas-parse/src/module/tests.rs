@@ -10,9 +10,7 @@ use std::{
 
 use async_trait::async_trait;
 use atlas_domain::{
-    AtlasError, BlockId, BlockKind, CANONICAL_SCHEMA_VERSION, CanonicalBlock, CanonicalChapter,
-    CanonicalDocument, ChapterId, ChapterRole, DocumentFileState, DocumentId, DocumentSummary,
-    ParseState, ParserIdentity, StructuredContent,
+    AtlasError, CanonicalDocument, DocumentFileState, DocumentId, DocumentSummary, ParseState,
 };
 use atlas_library::{
     DocumentImport, DocumentListRequest, DocumentRecord, DocumentSourceUpdate, DocumentStore,
@@ -196,6 +194,19 @@ struct FixedConfiguration {
 
 struct FailingConfiguration;
 
+#[derive(Clone)]
+struct CountingConfiguration {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl CloudParseConfigurationPort for CountingConfiguration {
+    async fn load(&self) -> Result<Option<CloudParseConfiguration>, AtlasError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    }
+}
+
 #[async_trait]
 impl CloudParseConfigurationPort for FailingConfiguration {
     async fn load(&self) -> Result<Option<CloudParseConfiguration>, AtlasError> {
@@ -207,31 +218,6 @@ impl CloudParseConfigurationPort for FailingConfiguration {
 impl CloudParseConfigurationPort for FixedConfiguration {
     async fn load(&self) -> Result<Option<CloudParseConfiguration>, AtlasError> {
         Ok(self.value.clone())
-    }
-}
-
-struct FixedLocalExtractor {
-    calls: AtomicUsize,
-}
-
-impl FixedLocalExtractor {
-    fn new() -> Self {
-        Self {
-            calls: AtomicUsize::new(0),
-        }
-    }
-}
-
-#[async_trait]
-impl LocalTextExtractor for FixedLocalExtractor {
-    async fn extract(&self, request: LocalExtractRequest) -> Result<CanonicalDocument, AtlasError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        Ok(canonical(
-            request.document_id,
-            &request.artifact_id,
-            &request.source_sha256,
-            "local_text",
-        ))
     }
 }
 
@@ -363,7 +349,6 @@ struct Rig {
     _temporary: TempDir,
     store: Arc<MemoryParseStore>,
     cloud: Arc<ScriptedCloudParser>,
-    local: Arc<FixedLocalExtractor>,
     module: DefaultParseModule,
     document_id: DocumentId,
 }
@@ -395,7 +380,6 @@ impl Rig {
         };
         let store = Arc::new(MemoryParseStore::default());
         let cloud = Arc::new(ScriptedCloudParser::new(store.clone(), statuses));
-        let local = Arc::new(FixedLocalExtractor::new());
         let configuration = FixedConfiguration {
             value: Some(CloudParseConfiguration {
                 profile_id: "cloud_mineru".to_owned(),
@@ -410,7 +394,6 @@ impl Rig {
             Arc::new(OneDocumentStore { document }),
             Arc::new(configuration),
             cloud.clone(),
-            local.clone(),
             temporary.path().join("artifacts"),
         )
         .with_poll_policy(ParsePollPolicy {
@@ -425,7 +408,6 @@ impl Rig {
             _temporary: temporary,
             store,
             cloud,
-            local,
             module,
             document_id,
         }
@@ -451,20 +433,33 @@ impl Rig {
 async fn automatic_cloud_parsing_off_never_crosses_the_cloud_port() {
     let rig = Rig::new(false, []).await;
 
-    rig.module
+    let view = rig
+        .module
         .ensure(rig.document_id.clone(), "session-1".to_owned())
         .await
-        .expect("parse should start");
-    let view = rig.wait_for(ParseState::Degraded).await;
+        .expect("parse view should load");
 
-    assert_eq!(
-        view.document.expect("local document").parser.backend,
-        "local_text"
-    );
+    assert_eq!(view.parse.state, ParseState::NotStarted);
+    assert!(view.document.is_none());
     assert_eq!(rig.cloud.requests.load(Ordering::SeqCst), 0);
     assert_eq!(rig.cloud.uploads.load(Ordering::SeqCst), 0);
     assert_eq!(rig.cloud.status_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(rig.local.calls.load(Ordering::SeqCst), 1);
+    assert!(rig.store.state.lock().await.operations.is_empty());
+}
+
+#[tokio::test]
+async fn startup_recovery_without_jobs_never_reads_provider_credentials() {
+    let mut rig = Rig::new(false, []).await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    rig.module.configuration = Arc::new(CountingConfiguration {
+        calls: calls.clone(),
+    });
+
+    assert_eq!(
+        rig.module.recover().await.expect("recovery should finish"),
+        0
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -491,7 +486,143 @@ async fn cloud_cache_miss_persists_the_batch_before_sending_pdf_bytes() {
     assert_eq!(rig.cloud.requests.load(Ordering::SeqCst), 1);
     assert_eq!(rig.cloud.uploads.load(Ordering::SeqCst), 1);
     assert_eq!(rig.cloud.downloads.load(Ordering::SeqCst), 1);
-    assert_eq!(rig.local.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn stale_normalizer_operation_reuses_its_remote_batch_without_reuploading() {
+    let rig = Rig::new(
+        true,
+        [CloudParseStatus::Done {
+            download_url: "https://cdn.example.test/result.zip".to_owned(),
+        }],
+    )
+    .await;
+    let source = rig
+        .module
+        .documents
+        .get(&rig.document_id)
+        .await
+        .expect("document query")
+        .expect("document exists");
+    let mut operation = ParseOperation::new(NewParseOperation {
+        id: "operation-stale-normalizer".to_owned(),
+        job_id: "job-stale-normalizer".to_owned(),
+        session_id: "session-1".to_owned(),
+        document_id: rig.document_id.clone(),
+        provider_profile_id: Some("cloud_mineru".to_owned()),
+        backend: "cloud_mineru".to_owned(),
+        parser_version: CLOUD_PARSER_VERSION.to_owned(),
+        normalizer_version: "mineru-v1".to_owned(),
+        endpoint_origin: Some("https://mineru.example/api/v4".to_owned()),
+        endpoint_fingerprint: Some("fingerprint".to_owned()),
+        data_id: source.sha256,
+        created_at: 1,
+    });
+    operation.state = ParseOperationState::Processing;
+    operation.batch_id = Some("batch-existing".to_owned());
+    rig.store
+        .save_operation(&operation)
+        .await
+        .expect("stale operation should persist");
+
+    rig.module
+        .ensure(rig.document_id.clone(), "session-2".to_owned())
+        .await
+        .expect("stale normalizer operation should resume");
+    rig.wait_for(ParseState::Ready).await;
+
+    let current = rig
+        .store
+        .latest_operation(&rig.document_id, Some("cloud_mineru"))
+        .await
+        .expect("operation should load")
+        .expect("operation should exist");
+    assert_eq!(current.normalizer_version, NORMALIZER_VERSION);
+    assert_eq!(rig.cloud.requests.load(Ordering::SeqCst), 0);
+    assert_eq!(rig.cloud.uploads.load(Ordering::SeqCst), 0);
+    assert_eq!(rig.cloud.status_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn stale_parser_batch_is_visible_but_requires_reupload() {
+    let rig = Rig::new(true, []).await;
+    let source = rig
+        .module
+        .documents
+        .get(&rig.document_id)
+        .await
+        .expect("document query")
+        .expect("document exists");
+    let mut operation = ParseOperation::new(NewParseOperation {
+        id: "operation-stale-parser".to_owned(),
+        job_id: "job-stale-parser".to_owned(),
+        session_id: "session-1".to_owned(),
+        document_id: rig.document_id.clone(),
+        provider_profile_id: Some("cloud_mineru".to_owned()),
+        backend: "cloud_mineru".to_owned(),
+        parser_version: "mineru-v3".to_owned(),
+        normalizer_version: "mineru-v1".to_owned(),
+        endpoint_origin: Some("https://mineru.example/api/v4".to_owned()),
+        endpoint_fingerprint: Some("fingerprint".to_owned()),
+        data_id: source.sha256,
+        created_at: 1,
+    });
+    operation.state = ParseOperationState::Processing;
+    operation.batch_id = Some("batch-existing".to_owned());
+    rig.store
+        .save_operation(&operation)
+        .await
+        .expect("stale operation should persist");
+
+    let view = rig
+        .module
+        .ensure(rig.document_id.clone(), "session-2".to_owned())
+        .await
+        .expect("stale parser should become actionable");
+
+    assert_eq!(view.parse.state, ParseState::StatusUnknown);
+    assert!(view.document.is_none());
+    let error = rig
+        .module
+        .retry_remote_status(&rig.document_id)
+        .await
+        .expect_err("stale parser batch must not be resumed");
+    assert!(error.message.contains("re-upload"));
+    assert_eq!(rig.cloud.status_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn stale_success_is_not_projected_as_ready_without_a_current_document() {
+    let rig = Rig::new(
+        true,
+        [CloudParseStatus::Done {
+            download_url: "https://cdn.example.test/result.zip".to_owned(),
+        }],
+    )
+    .await;
+    rig.module
+        .ensure(rig.document_id.clone(), "session-1".to_owned())
+        .await
+        .expect("parse should start");
+    rig.wait_for(ParseState::Ready).await;
+    let mut state = rig.store.state.lock().await;
+    let document = state
+        .active
+        .get_mut(&rig.document_id)
+        .expect("active document should exist");
+    document.normalizer_version = "mineru-v1".to_owned();
+    let operation = state.operations.last_mut().expect("operation should exist");
+    operation.normalizer_version = "mineru-v1".to_owned();
+    drop(state);
+
+    let view = rig
+        .module
+        .view(&rig.document_id)
+        .await
+        .expect("parse view should load");
+
+    assert_eq!(view.parse.state, ParseState::NotStarted);
+    assert!(view.document.is_none());
 }
 
 #[tokio::test]
@@ -535,7 +666,6 @@ async fn ambiguous_upload_enters_status_unknown_without_a_second_upload() {
     assert!(view.document.is_none());
     assert_eq!(rig.cloud.requests.load(Ordering::SeqCst), 1);
     assert_eq!(rig.cloud.uploads.load(Ordering::SeqCst), 1);
-    assert_eq!(rig.local.calls.load(Ordering::SeqCst), 0);
     let operation = rig
         .store
         .latest_operation(&rig.document_id, None)
@@ -739,7 +869,6 @@ async fn startup_recovery_defers_cloud_work_when_the_provider_is_temporarily_una
         .expect("operation should remain");
     assert_eq!(deferred.state, ParseOperationState::Processing);
     assert_eq!(rig.cloud.status_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(rig.local.calls.load(Ordering::SeqCst), 0);
 
     rig.module.configuration = Arc::new(FixedConfiguration {
         value: Some(CloudParseConfiguration {
@@ -764,22 +893,28 @@ async fn startup_recovery_defers_cloud_work_when_the_provider_is_temporarily_una
 }
 
 #[tokio::test]
-async fn provider_lookup_failure_does_not_hide_a_cached_local_document() {
-    let mut rig = Rig::new(false, []).await;
+async fn provider_lookup_failure_does_not_hide_a_cached_cloud_document() {
+    let mut rig = Rig::new(
+        true,
+        [CloudParseStatus::Done {
+            download_url: "https://cdn.example.test/result.zip".to_owned(),
+        }],
+    )
+    .await;
     rig.module
         .ensure(rig.document_id.clone(), "session-1".to_owned())
         .await
-        .expect("local parse should start");
-    rig.wait_for(ParseState::Degraded).await;
+        .expect("Cloud parse should start");
+    rig.wait_for(ParseState::Ready).await;
     rig.module.configuration = Arc::new(FailingConfiguration);
 
     let view = rig
         .module
         .view(&rig.document_id)
         .await
-        .expect("cached local document should remain readable");
+        .expect("cached Cloud document should remain readable");
 
-    assert_eq!(view.parse.state, ParseState::Degraded);
+    assert_eq!(view.parse.state, ParseState::Ready);
     assert!(view.document.is_some());
 }
 
@@ -1023,7 +1158,10 @@ async fn explicit_reupload_is_rejected_while_remote_recovery_owns_the_document()
         .expect("document exists");
     seed_unknown_cloud_operation(&rig, &document, "operation-unknown").await;
     assert!(
-        rig.module.reserve_document(&rig.document_id).await,
+        rig.module
+            .reserve_document(&rig.document_id)
+            .await
+            .is_some(),
         "test should own the parse slot"
     );
 
@@ -1143,69 +1281,14 @@ async fn recovery_ignores_an_older_unknown_operation_when_a_replacement_is_queue
 }
 
 #[tokio::test]
-async fn recovery_publishes_a_finalized_manifest_without_repeating_local_extraction() {
-    let rig = Rig::new(false, []).await;
-    let source = rig
-        .module
-        .documents
-        .get(&rig.document_id)
-        .await
-        .expect("document query")
-        .expect("document exists");
-    let mut operation = ParseOperation::new(NewParseOperation {
-        id: "operation-1".to_owned(),
-        job_id: "job-1".to_owned(),
-        session_id: "session-1".to_owned(),
-        document_id: rig.document_id.clone(),
-        provider_profile_id: None,
-        backend: "local_text".to_owned(),
-        parser_version: LOCAL_PARSER_VERSION.to_owned(),
-        normalizer_version: LOCAL_NORMALIZER_VERSION.to_owned(),
-        endpoint_origin: None,
-        endpoint_fingerprint: None,
-        data_id: source.sha256.clone(),
-        created_at: 1,
-    });
-    operation.state = ParseOperationState::Normalizing;
-    rig.store
-        .save_operation(&operation)
-        .await
-        .expect("operation should persist");
-    let artifact_id = "artifact-operation-1";
-    let finalized = rig
-        .module
-        .artifact_root
-        .join(rig.document_id.as_str())
-        .join(artifact_id);
-    tokio::fs::create_dir_all(&finalized)
-        .await
-        .expect("artifact directory should exist");
-    let document = canonical(
-        rig.document_id.clone(),
-        artifact_id,
-        &source.sha256,
-        "local_text",
-    );
-    tokio::fs::write(
-        finalized.join("manifest.json"),
-        serde_json::to_vec(&document).expect("manifest should encode"),
-    )
-    .await
-    .expect("manifest should write");
-
-    assert_eq!(
-        rig.module.recover().await.expect("recovery should start"),
-        1
-    );
-    let view = rig.wait_for(ParseState::Degraded).await;
-
-    assert_eq!(view.document, Some(document));
-    assert_eq!(rig.local.calls.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test]
 async fn a_transient_publish_failure_is_recovered_from_the_finalized_manifest() {
-    let rig = Rig::new(false, []).await;
+    let rig = Rig::new(
+        true,
+        [CloudParseStatus::Done {
+            download_url: "https://cdn.example.test/result.zip".to_owned(),
+        }],
+    )
+    .await;
     rig.store.publish_failures.store(1, Ordering::SeqCst);
 
     rig.module
@@ -1214,7 +1297,7 @@ async fn a_transient_publish_failure_is_recovered_from_the_finalized_manifest() 
         .expect("parse should start");
     for _ in 0..200 {
         if rig.module.in_flight.lock().await.is_empty()
-            && rig.local.calls.load(Ordering::SeqCst) == 1
+            && rig.cloud.downloads.load(Ordering::SeqCst) == 1
         {
             break;
         }
@@ -1222,7 +1305,7 @@ async fn a_transient_publish_failure_is_recovered_from_the_finalized_manifest() 
     }
     let deferred = rig
         .store
-        .latest_operation(&rig.document_id, None)
+        .latest_operation(&rig.document_id, Some("cloud_mineru"))
         .await
         .expect("operation should load")
         .expect("operation should exist");
@@ -1232,13 +1315,14 @@ async fn a_transient_publish_failure_is_recovered_from_the_finalized_manifest() 
         rig.module.recover().await.expect("recovery should start"),
         1
     );
-    rig.wait_for(ParseState::Degraded).await;
+    rig.wait_for(ParseState::Ready).await;
 
-    assert_eq!(rig.local.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(rig.cloud.requests.load(Ordering::SeqCst), 1);
+    assert_eq!(rig.cloud.downloads.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
-async fn a_remote_parse_failure_falls_back_to_local_text() {
+async fn a_remote_parse_failure_never_falls_back_to_local_text() {
     let rig = Rig::new(
         true,
         [CloudParseStatus::Failed {
@@ -1251,13 +1335,57 @@ async fn a_remote_parse_failure_falls_back_to_local_text() {
         .ensure(rig.document_id.clone(), "session-1".to_owned())
         .await
         .expect("parse should start");
-    let view = rig.wait_for(ParseState::Degraded).await;
+    for _ in 0..200 {
+        if rig.module.in_flight.lock().await.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let view = rig
+        .module
+        .view(&rig.document_id)
+        .await
+        .expect("parse view should load");
 
-    assert_eq!(
-        view.document.expect("fallback document").parser.backend,
-        "local_text"
+    assert_eq!(view.parse.state, ParseState::Failed);
+    assert!(view.document.is_none());
+    assert!(
+        rig.store
+            .state
+            .lock()
+            .await
+            .operations
+            .iter()
+            .all(|operation| operation.backend == "cloud_mineru")
     );
-    assert_eq!(rig.local.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn document_cancellation_waits_until_parse_worker_stops() {
+    let rig = Rig::new(true, [CloudParseStatus::Pending]).await;
+    rig.cloud.pause_status.store(true, Ordering::SeqCst);
+    rig.module
+        .ensure(rig.document_id.clone(), "session-1".to_owned())
+        .await
+        .expect("parse should start");
+    tokio::time::timeout(Duration::from_secs(1), rig.cloud.status_started.notified())
+        .await
+        .expect("status request should start");
+
+    rig.module
+        .cancel_document(&rig.document_id)
+        .await
+        .expect("cancellation should finish");
+
+    assert!(!rig.module.in_flight.lock().await.contains(&rig.document_id));
+    assert_eq!(rig.cloud.downloads.load(Ordering::SeqCst), 0);
+    assert!(
+        rig.store
+            .active_document(&rig.document_id)
+            .await
+            .expect("active document query")
+            .is_none()
+    );
 }
 
 async fn seed_unknown_cloud_operation(rig: &Rig, document: &DocumentRecord, operation_id: &str) {
@@ -1282,60 +1410,6 @@ async fn seed_unknown_cloud_operation(rig: &Rig, document: &DocumentRecord, oper
         .save_operation(&operation)
         .await
         .expect("unknown operation should persist");
-}
-
-fn canonical(
-    document_id: DocumentId,
-    artifact_id: &str,
-    source_sha256: &str,
-    backend: &str,
-) -> CanonicalDocument {
-    let content = StructuredContent::text("A synthetic paragraph");
-    let source_digest = hex::encode(Sha256::digest(
-        serde_json::to_vec(&content).expect("content should encode"),
-    ));
-    CanonicalDocument {
-        schema_version: CANONICAL_SCHEMA_VERSION,
-        artifact_id: artifact_id.to_owned(),
-        document_id,
-        source_sha256: source_sha256.to_owned(),
-        parser: ParserIdentity {
-            name: "Synthetic".to_owned(),
-            version: if backend == "local_text" {
-                LOCAL_PARSER_VERSION.to_owned()
-            } else {
-                CLOUD_PARSER_VERSION.to_owned()
-            },
-            backend: backend.to_owned(),
-        },
-        normalizer_version: if backend == "local_text" {
-            LOCAL_NORMALIZER_VERSION.to_owned()
-        } else {
-            NORMALIZER_VERSION.to_owned()
-        },
-        page_count: 1,
-        title: Some("Synthetic paper".to_owned()),
-        chapters: vec![CanonicalChapter {
-            id: ChapterId::new(format!("chapter-{artifact_id}")),
-            order_index: 0,
-            depth: 1,
-            role: ChapterRole::Body,
-            source_title: "1 Introduction".to_owned(),
-            page_start: 1,
-            page_end: 1,
-            blocks: vec![CanonicalBlock {
-                id: BlockId::new(format!("block-{artifact_id}")),
-                order_index: 0,
-                kind: BlockKind::Paragraph,
-                page_start: 1,
-                page_end: 1,
-                bounding_boxes: Vec::new(),
-                content,
-                source_digest,
-            }],
-        }],
-        assets: Vec::new(),
-    }
 }
 
 fn cloud_archive() -> Vec<u8> {

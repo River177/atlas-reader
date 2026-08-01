@@ -1,7 +1,6 @@
 # Atlas Reader
 
-Atlas Reader is a macOS bilingual academic PDF reader for Chinese researchers reading English
-papers.
+Atlas Reader is a local web application for Chinese researchers reading English academic PDFs.
 
 The product focuses on chapter-based English–Chinese close reading, preserving document structure,
 formulas, citations, and page relationships. Selected translated text can ground a persistent
@@ -11,20 +10,19 @@ OpenAI-compatible endpoint.
 
 ## Status
 
-Atlas Reader's local foundation, parsing loop, and chapter translation loop are complete. The
-repository contains a runnable Tauri 2 desktop shell, a React and TypeScript frontend, Rust domain
-modules, SQLite migrations, generated TypeScript contracts, and end-to-end slice tests.
+Atlas Reader's library, reading, parsing, translation, and Reading Assistant loops are complete. A
+loopback-only Rust server hosts the React web application and owns SQLite, Keychain access, managed
+PDF copies, provider calls, recovery, and protected reader media.
 
 Completed vertical slices:
 
-1. **Local library import** — import PDFs from the native picker or drag and drop, search the local
-   library, detect duplicates, refresh source status, relocate moved files, and remove records
-   without deleting the original PDF.
-2. **Original PDF reading** — open an imported paper in an embedded PDF.js viewer with page
-   navigation, zoom, in-document search, and a reading position that survives closing the reader and
-   restarting the application. The viewer reaches the PDF through a capability-token URL served by a
-   dedicated `atlas-reader://` protocol, so absolute file paths never reach the frontend and a token
-   stops working as soon as the source file changes or the reader closes.
+1. **Local library import** — import PDFs from the browser picker or drag and drop, stream them into
+   Atlas-managed local storage, validate metadata and limits, detect duplicates, search, replace
+   missing legacy sources, and remove managed copies.
+2. **Original PDF reading** — open an imported paper in a PDF.js viewer with page navigation, zoom,
+   in-document search, and a reading position that survives closing the reader and restarting the
+   server. PDF bytes use an opaque capability URL with HTTP Range support, so filesystem paths never
+   reach the browser.
 
 3. **Provider settings** — configure the Cloud MinerU endpoint and any OpenAI-compatible translation
    endpoint, store each API key in the macOS Keychain, and test a connection with a result that
@@ -34,9 +32,9 @@ Completed vertical slices:
    before automatic cloud parsing can be switched on.
 4. **Parsing loop** — automatically parse uncached papers with Cloud MinerU when enabled, persist
    the remote batch before uploading, resume interrupted work without allocating a duplicate batch,
-   and fall back to the local PDF text layer on a definite remote failure. Results are normalized
-   into a provider-neutral chapter/block schema, published transactionally to SQLite and a
-   content-addressed artifact cache, and rendered as a chapter outline with structured text,
+   and surface remote failures without publishing a low-quality local structure. Results are
+   normalized into a provider-neutral chapter/block schema, published transactionally to SQLite and
+   a content-addressed artifact cache, and rendered as a chapter outline with structured text,
    formulas, tables, figures, captions, and citations. Archive extraction rejects traversal, links,
    oversized entries, and zip bombs; ambiguous remote outcomes require an explicit recovery choice.
 5. **Translation loop** — translate the focused chapter through an OpenAI-compatible streaming
@@ -47,15 +45,15 @@ Completed vertical slices:
    React only sends chapter intent, while polling uses a read-only projection that cannot preempt
    work.
 
-Provider credential lookup failures are non-fatal to local use: cached translations, cached parse
-artifacts, and local PDF text remain readable. Persisted cloud parse work resumes on the next
-`ensure` after the provider becomes available again. Resume requires the original endpoint
+Provider credential lookup failures are non-fatal to local use: cached translations, cached Cloud
+parse artifacts, and the original PDF remain readable. Persisted cloud parse work resumes on the
+next `ensure` after the provider becomes available again. Resume requires the original endpoint
 fingerprint; changing the endpoint turns old work into an explicit re-upload choice rather than
 sending the current credential to the previous host.
 
-The next vertical slice is a document-scoped Reading Assistant: select translated text, attach its
-aligned source context to the left chat panel, stream an explanation, persist the conversation
-locally, and navigate validated citations back to the paper. Chat never modifies translations.
+The Reading Assistant is document-scoped: selected translated text attaches validated aligned source
+context to the left chat, responses stream and persist locally, and validated citations navigate
+back to the paper. Chat never modifies translations.
 
 ### Cloud MinerU protocol verification
 
@@ -108,10 +106,9 @@ Credentials live in the macOS keychain under service `com.atlasreader.providers`
 key in this repository.** It is public, and anything committed to git history is leaked permanently
 even if a later commit removes it.
 
-macOS ties keychain access control to the calling binary's code signature. Development builds are
-ad-hoc signed and the linker embeds the cargo build hash in the signing identity, so every rebuild
-looks like a brand new application to the keychain and triggers an authorization prompt. Choosing
-"Always Allow" does not help, because the next build replaces the binary that was authorized.
+macOS ties Keychain access to the calling binary's code signature. `pnpm web:build` signs the local
+Rust server with an installed Apple Development identity plus `com.atlasreader.desktop`. Select
+"Always Allow" once for each existing Atlas credential; that choice survives local rebuilds.
 
 Debug builds therefore read an environment variable before touching the keychain:
 
@@ -133,8 +130,8 @@ export ATLAS_OPENAI_COMPATIBLE='...'
 
 The override shadows reads only; saving a key in settings still writes to the keychain. Blank values
 are treated as unset and fall through to the keychain. **Release builds ignore these variables
-entirely**, so a shipped Atlas reads credentials only from the keychain — and because a signed app
-keeps a stable identity across launches and upgrades, users are prompted at most once.
+entirely**, so a shipped Atlas reads credentials only from the keychain. Startup recovery does not
+touch provider credentials when no jobs need recovery.
 
 ## MVP direction
 
@@ -155,8 +152,9 @@ keeps a stable identity across launches and upgrades, users are prompted at most
 The repository is a Cargo and pnpm workspace:
 
 ```text
-apps/desktop              Tauri shell and React frontend
-crates/atlas-domain       Framework-independent domain and IPC types
+apps/web                  React browser frontend
+apps/web-server           Loopback-only Axum server and HTTP Adapter
+crates/atlas-domain       Framework-independent domain and transport contracts
 crates/atlas-library      Deep local-library module
 crates/atlas-document-reader
                           Reader module: source authorization and reading position
@@ -172,8 +170,8 @@ crates/atlas-contracts    Rust contract facade
 packages/contracts        Generated TypeScript contracts
 ```
 
-Dependencies point inward toward `atlas-domain`. React talks to Rust through the Tauri bridge, and
-callers never orchestrate parsing, translation, retries, or caching directly.
+Dependencies point inward toward `atlas-domain`. React uses one HTTP `AtlasBridge` Adapter; callers
+never orchestrate parsing, Translation, Reading Assistant retries, recovery, or caching directly.
 
 ## Development
 
@@ -183,13 +181,18 @@ Requirements:
 - pnpm 10.33
 - Rust 1.97
 - Xcode command-line tools
+- An Apple Development signing identity for prompt-free local Release builds
 
 ```bash
 pnpm install
 pnpm contracts:generate
 pnpm validate
-pnpm tauri:dev
+pnpm web:start
 ```
+
+`pnpm web:start` builds the frontend and Rust server, packages static assets beside the binary,
+applies a stable local signature on macOS, starts on an ephemeral loopback port, and opens the
+one-time launch URL in the default browser. `pnpm web:run` starts an already-built server.
 
 `pnpm validate` runs formatting, linting, type checks, frontend tests, frontend builds, Clippy, and
 Rust tests. Cloud MinerU and translation live tests are not part of the default suite and require

@@ -5,17 +5,17 @@
 | 字段 | 内容 |
 |---|---|
 | 产品名称 | Atlas Reader |
-| 文档版本 | 0.2 |
-| 文档状态 | 聚焦后的 MVP 基线 |
+| 文档版本 | 0.3 |
+| 文档状态 | 本机 Web MVP 基线 |
 | 更新日期 | 2026-07-31 |
-| 目标平台 | macOS 14 及以上，Apple Silicon 优先 |
-| 产品形态 | 独立桌面学术 PDF 双语精读器 |
+| 目标平台 | 桌面浏览器；本机 Rust 服务，macOS 14 及以上优先 |
+| 产品形态 | 浏览器 UI + 本机 loopback Rust 服务 |
 | 首发用户 | 阅读英文论文的中文研究生、科研人员和研发工程师 |
 | 源语言 | 英文 |
 | 目标语言 | 简体中文 |
 | 账户系统 | 不提供 Atlas 账户 |
 | 多端同步 | 不提供 |
-| 本地存储 | PDF 路径、解析结果、译文、阅读对话和设置保存在本机 |
+| 本地存储 | 托管 PDF 副本、解析结果、译文、阅读对话和设置保存在本机 |
 | 云端解析 | 用户提供 Cloud MinerU API Key；启用后自动上传未缓存 PDF |
 | 翻译模型 | 用户配置的 OpenAI-compatible Endpoint |
 | copilot-api | 作为 OpenAI-compatible 兼容选项，不是安装前提 |
@@ -25,11 +25,15 @@
 
 ## 1. 最终产品定义
 
-Atlas Reader 是一款面向中文科研用户的 macOS 学术 PDF 双语精读器。
+Atlas Reader 是一款面向中文科研用户的本机 Web 学术 PDF 双语精读器。
 
 用户导入英文论文后，可以按章节获得保留标题层级、段落、公式、引用和页码关系的中英对照内容。用户选中中文译文后，选区及其对应原文、章节和页码作为 Selection Context 进入左侧 Reading Assistant；用户可以连续追问，AI 回答以可点击引用定位回论文。聊天只帮助理解，绝不修改译文。
 
-Atlas Reader 不提供账户、多端同步或自建模型服务。PDF 文件、解析结果、译文缓存、阅读状态和文档级 Reading Conversation 默认保存在本机。用户配置 Cloud MinerU API Key 并启用自动云解析后，未命中有效解析缓存的导入 PDF 会自动发送到配置的 Cloud MinerU Endpoint。模型只接收当前翻译或阅读消息所需的选区、对应原文、有限邻近上下文和必要会话窗口，不接收完整 PDF 或本地文件路径。
+Atlas Reader 不提供账户、多端同步或自建模型服务。浏览器只连接本机随机 loopback 端口；
+Rust 服务管理 PDF 副本、解析结果、译文缓存、阅读状态和文档级 Reading Conversation。用户配置
+Cloud MinerU API Key 并启用自动云解析后，未命中有效解析缓存的导入 PDF 会自动发送到配置的
+Cloud MinerU Endpoint。模型只接收当前翻译或阅读消息所需的选区、对应原文、有限邻近上下文和
+必要会话窗口，不接收完整 PDF 或本地文件路径。
 
 一句话定义：
 
@@ -171,7 +175,7 @@ v0.1 同时定义了论文库、PDF 阅读、全文检索、翻译、单篇问�
 - PDF 引用、解析结果、译文、阅读位置和 Reading Conversation 保存在本机。
 - 用户配置 API Key 并启用自动云解析后，缓存未命中的 PDF 会自动发送到 Cloud MinerU。
 - 设置页和 Reader 状态栏持续显示自动云解析开关与目标 Endpoint。
-- 用户可以全局关闭自动云解析；关闭后只使用本地低保真提取。
+- 用户可以全局关闭自动云解析；关闭后只保留原始 PDF 阅读，不生成结构化正文。
 - 翻译模型只接收当前章节或当前选区所需内容。
 - 不使用“完整本地处理”描述默认体验。
 
@@ -232,7 +236,7 @@ Atlas Reader 不要求注册、登录、订阅或 Atlas 云端存储。外部解
 - 上传、远端处理、下载和本地规范化进度。
 - 原始解析结果与规范化结果缓存。
 - 解析失败后的明确诊断。
-- 数字版 PDF 的低保真本地文本提取降级。
+- Cloud 失败时保留原始 PDF 阅读并显示明确错误，不自动发布低质量结构。
 
 #### 双语章节阅读
 
@@ -333,7 +337,7 @@ Atlas Reader 不要求注册、登录、订阅或 Atlas 云端存储。外部解
   → 立即打开原始 PDF
   → 检查本地解析缓存
   → 无缓存且自动云解析开启时上传 Cloud MinerU
-  → 未配置或关闭时使用本地低保真提取
+  → 未配置或关闭时只保留原始 PDF 阅读
   → 轮询处理状态
   → 下载解析结果
   → 校验并规范化章节与块
@@ -485,8 +489,8 @@ Atlas Reader
 | PAR-003 | 状态可见 | 上传、处理、下载和规范化分别显示状态 |
 | PAR-004 | 解析缓存 | 同一 PDF、Parser 版本和规范化版本命中时不重复上传 |
 | PAR-005 | 结果校验 | 拒绝路径穿越、超限压缩包、未知 Schema 和损坏资源 |
-| PAR-006 | 低保真降级 | Cloud 失败、未配置或自动云解析关闭时，对数字版 PDF 尝试本地文本提取 |
-| PAR-007 | 扫描件说明 | 本地提取无文本时，仅保留原 PDF 阅读并说明需要 Cloud 解析 |
+| PAR-006 | Cloud-only 结构化解析 | Cloud 失败、未配置或自动云解析关闭时，不生成本地结构化正文 |
+| PAR-007 | 原始 PDF 保底 | 没有可用 Cloud Artifact 时保留原 PDF 阅读并说明需要 Cloud 解析 |
 | PAR-008 | 取消 | 上传前可立即取消；上传完成后按提供方能力尝试取消远端任务 |
 | PAR-009 | 远端状态未知 | 无法确认上传是否被接收时禁止自动重复上传，避免重复任务和费用 |
 | PAR-010 | 原子发布 | 规范化结果全部验证后才切换为活动解析版本 |
@@ -567,7 +571,7 @@ Atlas Reader
 
 | 数据 | 本机保存 | 发送到 Cloud MinerU | 发送到翻译模型 |
 |---|---:|---:|---:|
-| 完整 PDF | 是，保存路径引用 | 自动云解析开启且缓存未命中时发送 | 否 |
+| 完整 PDF | 是，保存 Atlas 托管副本 | 自动云解析开启且缓存未命中时发送 | 否 |
 | 本地绝对路径 | 是 | 否 | 否 |
 | PDF SHA-256 | 是 | 仅作为客户端幂等或诊断标识时发送 | 否 |
 | 当前章节源文本 | 是 | 包含在完整 PDF 中 | 用户发起翻译时发送 |
@@ -663,10 +667,10 @@ Reading Assistant 请求预览示例：
 
 ### 12.4 兼容性
 
-- MVP 支持 macOS 14 和 15。
-- 首发只发布 arm64。
-- Intel 和 Universal Binary 在 MVP 指标稳定后评估。
-- 不以 Mac App Store 为首发渠道。
+- UI 支持当前稳定版 Chrome、Safari 和 Edge。
+- 本机 Rust 服务首发支持 macOS 14 和 15、Apple Silicon。
+- 服务只绑定随机 `127.0.0.1` 端口，不监听局域网地址。
+- Intel、Windows 和 Linux 服务包在 MVP 指标稳定后评估。
 
 ---
 
@@ -676,13 +680,12 @@ Reading Assistant 请求预览示例：
 
 | 层 | 选择 | 说明 |
 |---|---|---|
-| 桌面壳 | Tauri 2 | 原生窗口、文件访问、IPC 和签名打包 |
+| 本机服务 | Axum + Tokio | loopback HTTP、恢复、托管文件和浏览器启动 |
 | UI | React + TypeScript strict | 书架、双语阅读、设置和状态渲染 |
 | 构建 | Vite + pnpm workspace | 快速开发与明确依赖边界 |
 | 本地核心 | Rust stable | ReadingSession、任务、缓存、安全和网络 |
 | 异步运行时 | Tokio | Actor、任务队列、取消和流式网络 |
 | PDF 渲染 | PDF.js | 原始 PDF、文本选择、搜索和页码定位 |
-| 低保真提取 | Rust `pdf-extract` | Cloud 不可用时的数字版 PDF 降级 |
 | 数据库 | SQLite + SQLx | 持久状态、缓存、搜索和迁移 |
 | HTTP | reqwest + rustls | Cloud MinerU 与 OpenAI-compatible 请求 |
 | 公式渲染 | KaTeX | 双语视图中的 LaTeX |
@@ -697,8 +700,8 @@ Reading Assistant 请求预览示例：
 
 ```mermaid
 flowchart LR
-    UI["React WebView"]
-    IPC["Tauri IPC Adapter"]
+    UI["React Browser UI"]
+    HTTP["Authenticated HTTP Adapter"]
     RS["ReadingSession Module"]
     LIB["Library Module"]
     CFG["ProviderSettings Module"]
@@ -709,11 +712,11 @@ flowchart LR
     MINERU["Cloud MinerU"]
     MODEL["OpenAI-compatible Model"]
 
-    UI --> IPC
+    UI --> HTTP
     UI --> PDF
-    IPC --> RS
-    IPC --> LIB
-    IPC --> CFG
+    HTTP --> RS
+    HTTP --> LIB
+    HTTP --> CFG
     RS --> DB
     RS --> FS
     RS --> MINERU
@@ -732,7 +735,8 @@ flowchart LR
 4. SQLite 与文件系统是本地可替换依赖，不暴露在外部 Interface。
 5. Cloud MinerU、翻译提供方和 Keychain 位于真实 Seam，使用生产 Adapter 与测试 Adapter。
 6. MVP 使用“当前状态 + 持久任务 +短期事件日志”，不采用完整事件溯源。
-7. Tauri IPC 使用命令、快照和有序事件，不用大量细粒度 RPC 拼接工作流。
+7. HTTP Adapter 使用一次性 launch token、Bearer、每标签页 Client ID、CSRF、严格 Host/Origin
+   校验和能力 URL；不开放 CORS。
 
 ---
 
@@ -1102,7 +1106,7 @@ type SessionEvent =
 3. 每个 Session 的事件 `sequence` 严格递增。
 4. UI 检测到序号缺口时，重新调用 `open` 获取完整 Snapshot。
 5. 进度事件最高每秒 4 次。
-6. Provider 原始 Chunk 不直接穿过 IPC；Translation 只有完成校验的块产生
+6. Provider 原始 Chunk 不直接穿过 HTTP seam；Translation 只有完成校验的块产生
    `blocks_upserted`，Reading Assistant 只有经过大小和引用标记处理的文本产生
    `reading_message_delta`。
 7. `commandId` 在 24 小时内幂等，重复命令返回原 Receipt。
@@ -1114,7 +1118,7 @@ type SessionEvent =
     重复 ID 一律拒绝。
 13. Chat 轮询是只读投影，不能重新触发发送、取消或重试。
 14. `send_message` 的 `userMessageId` 由调用者生成，用于乐观渲染和重试关系；调用者重试
-    IPC 必须复用原 `commandId`，不能用同一 Message ID 发起新命令。Assistant Message ID
+    传输重试必须复用原 `commandId`，不能用同一 Message ID 发起新命令。Assistant Message ID
     只由 Core 生成。
 15. 问题去除首尾空白后必须为 1–8,000 UTF-8 bytes。
 16. Selection 必须满足 `startUtf16 < endUtf16`、选中文本非空且不超过 4,096 UTF-16 code
@@ -1127,7 +1131,7 @@ type SessionEvent =
 20. `clear_conversation` 作用域由 Session 的 Document 决定，前端不能指定或切换其他
     Conversation ID。
 12. `close` 关闭订阅；是否取消前台任务由参数明确决定。
-13. 所有错误通过 Receipt、Snapshot 或事件表达，不跨 IPC 抛出未分类字符串。
+13. 所有错误通过 Receipt、Snapshot 或结构化 `AtlasError` 表达，不跨 HTTP seam 返回未分类字符串。
 
 ---
 
@@ -1233,7 +1237,7 @@ loopback 主机允许使用明文 HTTP。`deleteSecret("mineru")` 会连带关�
 
 ### 15.3 DocumentView Module
 
-DocumentView 位于 WebView 内，使用 PDF.js。它负责渲染、搜索、文本选择和页码跳转，不负责 Cloud 解析或翻译。
+DocumentView 位于浏览器内，使用 PDF.js。它负责渲染、搜索、文本选择和页码跳转，不负责 Cloud 解析或翻译。
 
 ```ts
 interface DocumentViewModule {
@@ -1458,10 +1462,8 @@ interface CanonicalAsset {
   → 命中：直接使用
   → 未命中且自动云解析开启：Cloud MinerU
       → 成功：规范化并发布
-      → 失败：本地低保真文本提取
-  → 未配置或自动云解析关闭：本地低保真文本提取
-      → 有文本：提供降级双语模式
-      → 无文本：仅原 PDF 阅读
+      → 失败：显示 Cloud 错误，不发布结构化正文
+  → 未配置或自动云解析关闭：仅原 PDF 阅读
 ```
 
 MVP 不安装或管理 Local MinerU。
@@ -1593,7 +1595,9 @@ MinerU 不提供客户端幂等键，但提供两个足以避免重复上传的�
 
 - 仅 `text_level` 存在的块作为标题候选。
 - 实测 MinerU 将 `3.2.1` 一类三级标题同样标为 `text_level: 2`，因此层级不能只依赖
-  `text_level`，需再解析标题文本的数字前缀确定嵌套深度。
+  `text_level`，需再解析数字或附录字母前缀确定嵌套深度。
+- 只有编号标题、附录标题或不以句末标点结束的简短无编号标题进入目录；`Example ...` 和句子碎片
+  只保留为章内 Heading Block。
 - 首个 `text_level: 1` 作为文档标题，不单独成章。
 
 坐标系换算：
@@ -1605,7 +1609,9 @@ MinerU 不提供客户端幂等键，但提供两个足以避免重复上传的�
 
 图片资源：
 
-- `img_path` 文件名即内容 SHA-256，可直接作为内容寻址存储的键，无需重新计算。
+- `img_path` 的 64 位文件名是 Provider Resource ID，不保证等于下载后字节的内容哈希。
+- Atlas 校验资源路径、大小、magic bytes、扩展名和 MIME，并对实际字节重新计算 SHA-256 作为
+  Canonical Asset ID；Provider 路径只用于解析 `content_list.json` 引用。
 
 ### 18.8 实测基准
 
@@ -1633,14 +1639,14 @@ MinerU 不提供客户端幂等键，但提供两个足以避免重复上传的�
 结论：满足 §31.1 Phase 0 的退出条件，也满足 §32 中 TFRBC P75 小于 180 秒的验收标准，
 解析本身不是 TFRBC 的瓶颈，翻译才是。服务端对同一批次并行处理，批量导入不会线性放大等待。
 
-### 18.9 本地低保真提取
+### 18.9 Cloud-only 结构化解析
 
-- 使用 Rust `pdf-extract` 读取数字文本层。
-- 按页提取并通过标题启发式划分章节。
-- 不承诺正确恢复复杂表格、公式或双栏阅读顺序。
-- UI 持续显示“基础解析”徽标。
-- 基础解析生成独立 Parser 版本和缓存键。
-- 用户可以稍后启用自动云解析或直接重新发起 Cloud 解析。
+- 新版本不再创建 `local_text` Parse Operation，也不会在 Cloud 失败后自动发布本地文本层结果。
+- 原因：双栏论文、图表刻度、页码和脚注会被 PDF 文本层错误识别为章节或独立段落，质量不足以驱动翻译。
+- 未配置、关闭或 Cloud 失败时，原始 PDF 阅读仍可用；结构化视图显示配置或重试入口。
+- Schema 继续接受历史 `local_text` 记录以保持数据库向后兼容，但运行时不展示或恢复它们。
+- Cloud MinerU 的 64 位图片文件名视为 Provider Resource ID；Atlas 对实际字节计算 SHA-256，
+  并继续校验路径、大小、magic bytes、扩展名与 MIME，不再要求文件名等于内容哈希。
 
 ---
 
@@ -1995,25 +2001,29 @@ Reading Assistant 请求由以下部分组成：
 
 ---
 
-## 21. Tauri IPC 与并发
+## 21. 本机 HTTP Adapter 与并发
 
-### 21.1 IPC 映射
+### 21.1 HTTP 映射
 
-| Module 方法 | Tauri 命令 |
+| Module 方法 | 本机路由 |
 |---|---|
-| `ReadingSession.open` | `reading_session_open` |
-| `ReadingSession.dispatch` | `reading_session_dispatch` |
-| `ReadingSession.close` | `reading_session_close` |
-| `Library.importPdf` | `library_import_pdf` |
-| `Library.query` | `library_query` |
-| `Library.remove` | `library_remove` |
-| `Library.relocate` | `library_relocate` |
-| `ProviderSettings.get` | `provider_settings_get` |
-| `ProviderSettings.saveMineru` | `provider_settings_save_mineru` |
-| `ProviderSettings.saveTranslation` | `provider_settings_save_translation` |
-| `ProviderSettings.test` | `provider_settings_test` |
+| `ReadingSession.open` | `POST /api/sessions/open` |
+| `ReadingSession.dispatch` | `POST /api/sessions/:id/dispatch` |
+| `ReadingSession.snapshot` | `GET /api/sessions/:id` |
+| `ReadingSession.close` | `DELETE /api/sessions/:id` |
+| `Library.importPdf` | `POST /api/library/import`，multipart streaming |
+| `Library.query` | `POST /api/library/query` |
+| `Library.remove` | `DELETE /api/library/:id` |
+| `Library.relocate` | `POST /api/library/:id/relocate` |
+| `ProviderSettings.*` | `/api/providers/*` |
+| PDF Range | `GET /media/pdf/:capability` |
+| Parse Asset | `GET /media/artifacts/*?access=<resource-token>` |
 
-`reading_session_open` 接收 Tauri 2 `Channel<SessionEventEnvelope>`。命令返回 Snapshot，后续增量通过同一 Channel 发送。
+服务绑定 `127.0.0.1:0` 并自动打开带 URL fragment launch token 的页面。token 只可交换一次，
+换取当前进程的 API Bearer、CSRF 与资源 token；浏览器将控制 token 保存在当前 origin 的
+`sessionStorage`。所有 API 请求验证 loopback peer、精确 Host、Bearer 和每标签页 Client ID；
+写请求额外验证 Origin、Fetch Metadata 与 CSRF。PDF 使用独立随机 Reader capability，图片使用
+独立资源 token，绝不在浏览器暴露本地路径。
 
 ### 21.2 Session Actor
 
@@ -2504,14 +2514,16 @@ Keychain Service 固定为 `com.atlasreader.providers`。每次替换凭据先�
 
 #### 开发期的 Keychain 授权弹窗
 
-macOS 把 Keychain 条目的访问控制绑定到访问者的代码签名身份。开发构建是 ad-hoc 签名，
-链接器会把构建哈希写进签名标识（实测为 `Identifier=live_translation-129119472f4dbadd`，
-`Signature=adhoc, linker-signed`），因此每次 `cargo build` 产出的二进制在 Keychain 看来
-都是一个全新的应用，必然重新弹窗。选择「始终允许」也无效，因为被授权的那个二进制会被
-下一次构建替换掉。
+macOS 把 Keychain 条目的访问控制绑定到访问者的代码签名身份。未经处理的本地构建只有 linker
+ad-hoc 签名，链接器会把构建哈希写进 designated requirement，导致每次构建都被识别为新应用。
 
-这是开发构建的产物，不是最终用户会遇到的问题：签名后的 Atlas 具有稳定的签名标识，
-用户只会在首次访问时授权一次。
+`pnpm web:build` 使用本机 Xcode 管理的 Apple Development 身份和
+`identifier "com.atlasreader.desktop"` 签名 `atlas-web` 本机服务。requirement 同时约束 Apple
+trust chain、Team、证书和 identifier。开发者只需针对该稳定身份选择一次「始终允许」；
+后续本地重建继续匹配同一 requirement。
+
+应用启动恢复先查询本地 Job；没有待恢复任务时不读取 Provider Credential，因此纯启动不会触发
+Keychain。只有实际恢复、打开需要 Provider 状态的论文、连接测试或模型请求才读取对应凭据。
 
 开发期通过环境变量覆盖读取路径来绕开 Keychain，从而完全不触发弹窗。规则：
 
@@ -2611,14 +2623,14 @@ stateDiagram-v2
 
 ## 25. 安全设计
 
-### 25.1 Tauri 权限
+### 25.1 本机 Web 权限
 
-- 使用最小 Capability 配置。
-- WebView 不获得任意 Shell 执行权限。
-- 文件选择只通过 Tauri Dialog。
-- 自定义本地协议只读取已授权 PDF 与 Parse Asset。
-- IPC 命令对 Document ID、Session ID 和路径重新校验。
-- CSP 禁止远端脚本、内联脚本和未授权连接。
+- Rust 服务只绑定随机 `127.0.0.1` 端口，并持有数据目录排他锁。
+- 一次性 URL fragment launch token 换取进程内 Bearer、CSRF 和资源 token。
+- API 校验 loopback peer、精确 Host、Bearer 与每标签页 Client ID；写请求额外校验 Origin、
+  Fetch Metadata 和 CSRF。
+- 不发送跨端口 Cookie，不开放 CORS；CSP 禁止远端脚本、Frame、Object 和未授权连接。
+- 浏览器上传流式写入托管目录；PDF 与 Parse Asset 只通过受限能力 URL 读取。
 
 建议 CSP：
 
@@ -2634,7 +2646,7 @@ frame-src 'none';
 base-uri 'none';
 ```
 
-远端提供方请求只从 Rust 发出，不加入 WebView `connect-src`。
+远端提供方请求只从 Rust 发出，不加入浏览器 `connect-src`。
 
 ### 25.2 URL 安全
 
@@ -2732,12 +2744,11 @@ interface SessionError {
 | 故障 | 行为 |
 |---|---|
 | Cloud MinerU 未配置 | 原 PDF 可读，显示配置入口 |
-| 自动云解析关闭 | 使用本地低保真提取 |
+| 自动云解析关闭 | 仅原 PDF 阅读，不生成结构化正文 |
 | Cloud 鉴权失败 | 不重试，要求更新 Key |
 | Cloud 限流 | 按 `Retry-After` 等待，可取消 |
 | Cloud 状态未知 | 不自动重复上传，要求用户确认 |
-| Cloud 解析失败 | 尝试本地低保真提取 |
-| 本地提取无文本 | 仅原 PDF 阅读 |
+| Cloud 解析失败 | 保留错误与原 PDF，不自动降级或重复上传 |
 | 模型未配置 | 原文和 PDF 可读，翻译按钮引导设置 |
 | 模型 401/403 | 保留任务和已完成块，要求更新 Key |
 | 模型 429 | 延迟重试并显示等待时间 |
@@ -2815,28 +2826,25 @@ Atlas/
 ├── package.json
 ├── pnpm-workspace.yaml
 ├── apps/
-│   └── desktop/
+│   ├── web/
+│   │   ├── src/
+│   │   │   ├── app/
+│   │   │   ├── bridge/
+│   │   │   ├── features/
+│   │   │   │   ├── library/
+│   │   │   │   ├── reader/
+│   │   │   │   └── settings/
+│   │   │   └── main.tsx
+│   │   ├── package.json
+│   │   └── vite.config.ts
+│   └── web-server/
 │       ├── src/
-│       │   ├── app/
-│       │   ├── bridge/
-│       │   ├── features/
-│       │   │   ├── library/
-│       │   │   ├── reader/
-│       │   │   ├── reading-assistant/
-│       │   │   └── settings/
-│       │   ├── shared/
-│       │   └── main.tsx
-│       ├── src-tauri/
-│       │   ├── capabilities/
-│       │   ├── icons/
-│       │   ├── src/
-│       │   │   ├── commands/
-│       │   │   ├── app_state.rs
-│       │   │   └── lib.rs
-│       │   ├── Cargo.toml
-│       │   └── tauri.conf.json
-│       ├── package.json
-│       └── vite.config.ts
+│       │   ├── app.rs
+│       │   ├── auth.rs
+│       │   ├── imports.rs
+│       │   ├── media.rs
+│       │   └── routes.rs
+│       └── Cargo.toml
 ├── crates/
 │   ├── atlas-domain/
 │   │   └── src/
@@ -2891,16 +2899,16 @@ atlas-reading-session ← atlas-library
   ↑
 atlas-storage + atlas-adapters
   ↑
-desktop src-tauri commands
+atlas-web Axum Adapter
   ↑
 React bridge and UI
 ```
 
-Domain 不依赖 Tauri、SQLx、reqwest 或 React。
+Domain 不依赖 Axum、SQLx、reqwest 或 React。
 
 ### 28.2 合同生成
 
-- Rust 是 IPC 类型的单一事实来源。
+- Rust 是跨 HTTP seam 合同类型的单一事实来源。
 - `ts-rs` 在测试中生成 `packages/contracts/src/generated.ts`。
 - CI 检查生成文件是否与 Rust 类型一致。
 - Schema Version 变化必须有兼容性测试。
@@ -2932,8 +2940,8 @@ Domain 不依赖 Tauri、SQLx、reqwest 或 React。
 5. 状态过期的 Selection Context 被拒绝。
 6. Cloud 上传在支持幂等键时安全重试。
 7. 不支持幂等查询的模糊失败进入 `status_unknown`。
-8. Cloud 失败后本地文本提取成功。
-9. 扫描 PDF 的本地提取产生明确降级。
+8. Cloud 失败后不创建 `local_text` Operation，也不覆盖已有 Cloud Artifact。
+9. 未配置或关闭 Cloud 时只提供原始 PDF 阅读。
 10. 当前章先于预取任务执行。
 11. 打开预取章会提升任务优先级。
 12. 预取不递归翻译整篇。
@@ -3089,17 +3097,15 @@ Fixture，也不进入默认离线套件。
 主分支额外执行：
 
 - Playwright UI 主流程。
-- arm64 Tauri 构建。
+- arm64 `atlas-web` Release 构建与静态资源打包。
 - 安装与启动 Smoke Test。
 
 ### 30.2 分发
 
-- 使用 Apple Developer ID Application 签名。
-- 启用 Hardened Runtime。
-- 提交 Apple Notarization。
-- 生成签名 DMG。
-- 首发不启用 Mac App Store Sandbox。
-- 首发不自动静默更新；应用内检查更新后由用户确认安装。
+- `pnpm web:build` 生成签名的 `atlas-web` 本机服务和相邻 `web-dist` 静态资源。
+- macOS 本地构建使用 Apple Development 身份稳定访问 Keychain；公开分发改用 Developer ID。
+- 服务启动后绑定随机 loopback 端口并打开默认浏览器，不安装浏览器扩展。
+- 首发不自动静默更新；下载新服务包后由用户确认替换。
 
 ### 30.3 Release Channel
 
@@ -3116,7 +3122,7 @@ Fixture，也不进入默认离线套件。
 
 交付：
 
-- Tauri 2 + PDF.js arm64 原型。
+- loopback Rust HTTP + PDF.js 浏览器原型。
 - Cloud MinerU 真实 Endpoint 上传、轮询、下载 Spike。
 - OpenAI-compatible SSE 与 JSON Lines Spike。
 - 20 篇论文的 Cloud 延迟样本。
@@ -3132,7 +3138,7 @@ Fixture，也不进入默认离线套件。
 
 进展（2026-07-30）：
 
-- Tauri 2 + PDF.js arm64 原型、Keychain 读写：已在 Phase 1 中交付。
+- loopback Rust HTTP + PDF.js 原型、Keychain 读写：已完成。
 - Cloud MinerU Spike：**已完成**，协议、鉴权、限制与结果格式记录于 §18.2 至 §18.7。
 - 延迟样本：**已完成且超出门槛**，10/10 篇在 120 秒内完成，P75 为 25.8 秒，详见 §18.8。
 - OpenAI-compatible 流式 Spike：**已完成**，18 次运行全部保持块数、顺序与保护标记，
@@ -3147,6 +3153,7 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
 交付：
 
 - pnpm 与 Cargo Workspace。
+- Axum loopback Server、launch-token 鉴权和 React HTTP Adapter。
 - Library Module。
 - SQLite Schema v1 与迁移。
 - PDF 导入、去重、搜索、缺失和重新定位。
@@ -3163,12 +3170,12 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
 
 交付：
 
-- ReadingSession Actor 与 IPC。
+- ReadingSession Module 与本机 HTTP Adapter。
 - 自动云解析设置与常驻状态提示。
 - MinerUCloudHttpAdapter。
 - Parse Job、恢复和状态未知处理。
 - Canonical Schema、规范化和文件缓存。
-- 本地低保真提取。
+- Cloud-only 结构化解析与原始 PDF 保底。
 
 退出条件：
 
@@ -3186,16 +3193,16 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
   以及必须显式确认的新 Batch 重传。若进程在上传检查点中断且远端仍为 Missing，会复用
   原预签名地址，不申请第二个 Batch。
 - Canonical Schema 覆盖章节、段落、公式、引用、表格、图片、图注、页码和 PDF points
-  坐标；Cloud MinerU 与本地文本层使用独立 parser/normalizer 版本。
+  坐标；结构化正文只由 Cloud MinerU Artifact 生成。
 - ZIP 解包在落盘前预检条目数、单文件大小、总展开大小和源文件比例，拒绝绝对路径、
   `..`、链接和特殊条目，只保留结构 JSON 与经 magic bytes、扩展名和 SHA-256 校验的图片。
 - Artifact 目录先原子移动，再由 SQLite 单事务发布 active artifact、章节、块、FTS、
   Parse Operation 和 Job Event；发布暂时失败时保留可恢复 manifest，启动后无需重新解析。
 - Reader 常驻显示解析状态，并可在 PDF 与结构化原文间切换；结构化视图含章节目录、
-  原文块、公式、表格、内容寻址图片和本地低保真降级标记。
-- 零上传、持久化先于上传、未知状态、同 URL 恢复、恶意压缩包、事务回滚、FTS、
-  本地降级、启动恢复和前端恢复操作均有自动化回归测试。
-- Keychain 或 Provider Profile 暂时不可读时，缓存与本地解析仍可用；中断的持久云任务保留，
+  原文块、公式、表格和按实际字节内容寻址的图片。
+- 零上传、持久化先于上传、未知状态、同 URL 恢复、恶意压缩包、Provider 资源 ID、
+  禁止本地降级、事务回滚、FTS、启动恢复和前端恢复操作均有自动化回归测试。
+- Keychain 或 Provider Profile 暂时不可读时，已有 Cloud 缓存与原始 PDF 仍可用；中断的持久云任务保留，
   配置恢复后的下一次 `ensure` 会继续原 Operation。显式远端状态重试先持久化运行态，再启动
   后台查询，避免 UI 停留在 `status_unknown` 后停止轮询。
 - 恢复前必须匹配持久 Operation 的 Endpoint Fingerprint。Endpoint 或 Key 已切换时绝不把当前
@@ -3270,9 +3277,9 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
 - `DefaultReadingAssistantModule` 已完成：发送前选区重验证和请求预算、消息先持久化后调用、
   `tiktoken-rs` 预算、4 个完整历史轮次、节流且带 trailing flush 的流式 checkpoint、原子取消、
   失败重试、清空、崩溃恢复和 Citation Target 映射。
-- ReadingSession/Tauri 接线已完成：不新增浅层 IPC，现有 `reading_session_dispatch` 路由嵌套
-  Assistant Command，Snapshot 只读恢复对话，最终 Session close 同时取消 Translation 与 Chat；
-  桌面启动应用 migration 0006、恢复中断回答并组装生产 Store/Adapter。
+- ReadingSession/HTTP 接线已完成：`/api/sessions/:id/dispatch` 路由嵌套 Assistant Command，
+  Snapshot 只读恢复对话，最终 Session close 同时取消 Translation 与 Chat；服务启动应用
+  migration 0006、恢复中断回答并组装生产 Store/Adapter。
 - React 左侧 Assistant 已完成：结构化译文 UTF-16 选区映射、跨输入焦点持久高亮、Selection
   Context 卡片、纯文本流式消息、取消、最新失败尝试重试、清空和文档级恢复。
 - Session Command 使用同一串行队列与 revision 对账；轮询不会覆盖动作错误、用户上滚位置或新选区，
@@ -3290,7 +3297,7 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
 - 本地日志与诊断包。
 - 性能优化。
 - 可访问性检查。
-- 签名、Notarization 和 DMG。
+- 服务签名、打包和启动器硬化。
 - 迁移、恢复和长时运行测试。
 
 退出条件：
@@ -3319,7 +3326,7 @@ Phase 0 的技术风险验证到此结束，可以进入 Phase 2 的解析闭环
 3. 自动云解析开启且缓存未命中时自动向 Cloud MinerU 提交 PDF。
 4. 设置页明确显示完整 PDF、规范化目标 Base URL、用途和全局开关。
 5. 同一解析缓存命中时不会重复上传。
-6. 自动云解析关闭或未配置时会尝试本地低保真提取。
+6. 自动云解析关闭或未配置时不会创建结构化正文，原始 PDF 仍可阅读。
 7. Cloud 模糊失败不会自动重复上传。
 8. 典型论文 TFRBC 达到 P75 小于 180 秒。
 9. 原文与译文按 Canonical Block 对齐。
@@ -3375,7 +3382,7 @@ MVP 不自动上传分析数据。通过本地指标和用户主动参与的研�
 
 | 风险 | 影响 | 应对 |
 |---|---|---|
-| Cloud MinerU P75 超过 2 分钟 | 无法达到三分钟目标 | Phase 0 实测；显示阶段进度；保留本地降级 |
+| Cloud MinerU P75 超过 2 分钟 | 无法达到三分钟目标 | Phase 0 实测；显示阶段进度与取消；保留原 PDF 阅读 |
 | MinerU API 不支持幂等 | 崩溃后可能重复上传 | 状态未知时停止自动重试并要求确认 |
 | MinerU 结果格式变化 | 规范化失败 | Adapter 版本化、Fixture 合同测试、原始结果缓存 |
 | 用户误解完整 PDF 上传 | 隐私信任受损 | 首次设置明确披露、常驻云解析状态和全局关闭开关 |
@@ -3400,7 +3407,7 @@ MVP 不自动上传分析数据。通过本地指标和用户主动参与的研�
 - 用户负责确认其上传 PDF 到外部解析提供方的权利。
 - 应用在 Cloud MinerU 设置页提醒用户查看提供方隐私、保留和计费政策。
 - 发布包附带第三方许可证清单。
-- PDF.js、React、Tauri、KaTeX、Rust Crates 和 JavaScript Packages 在每次发布前执行许可证扫描。
+- PDF.js、React、Axum、Rust Crates 和 JavaScript Packages 在每次发布前执行许可证扫描。
 - 不引入许可证与预期分发模式冲突的 PDF 二进制依赖。
 
 ---
@@ -3438,20 +3445,19 @@ ReadingSession 始终保持单文档范围。多文档能力建立新的 Researc
 ## 37. 最终技术路线
 
 ```text
-Tauri 2
-+ React / TypeScript strict
+React / TypeScript strict
++ Axum loopback HTTP
 + Rust / Tokio
 + SQLite / SQLx
 + PDF.js
 + Cloud MinerU with user-supplied API key and automatic parsing
-+ local low-fidelity PDF text fallback
 + OpenAI-compatible streaming translation
 + protected formula and citation atoms
 + block-level validation and cache
 + selection-grounded Reading Assistant
 + persistent document conversation and validated citations
 + macOS Keychain
-+ signed and notarized arm64 DMG
++ signed local Rust service + packaged web assets
 ```
 
 最终 MVP：

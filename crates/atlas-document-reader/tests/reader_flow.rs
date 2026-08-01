@@ -179,7 +179,7 @@ async fn position_validation_rejects_invalid_page_offset_and_scale() {
 }
 
 #[tokio::test]
-async fn opening_the_same_document_revokes_the_previous_token() {
+async fn opening_the_same_document_keeps_independent_tab_tokens() {
     let directory = tempdir().expect("temporary directory");
     let pdf = directory.path().join("paper.pdf");
     fs::write(&pdf, b"%PDF-1.7\nreader fixture").expect("fixture should write");
@@ -203,7 +203,7 @@ async fn opening_the_same_document_revokes_the_previous_token() {
         registry
             .resolve(&first.source_token)
             .expect("registry should resolve")
-            .is_none()
+            .is_some()
     );
     assert!(
         registry
@@ -223,7 +223,7 @@ async fn opening_the_same_document_revokes_the_previous_token() {
         )
         .await
         .expect("active session should save");
-    let stale = reader
+    reader
         .save_position(
             &first.source_token,
             ReadingPositionUpdate {
@@ -233,15 +233,14 @@ async fn opening_the_same_document_revokes_the_previous_token() {
             },
         )
         .await
-        .expect_err("superseded session must not overwrite the newer position");
-    assert_eq!(stale.code, AtlasErrorCode::NotFound);
+        .expect("the other tab should remain active");
 
     let reopened = reader
         .open(DocumentId::from("document-1"))
         .await
         .expect("reader should reopen");
-    assert_eq!(reopened.position.page, 4);
-    assert_eq!(reopened.position.scale_value, "page-fit");
+    assert_eq!(reopened.position.page, 1);
+    assert_eq!(reopened.position.scale_value, "page-width");
 }
 
 fn source(path: &std::path::Path, file_state: DocumentFileState) -> ReaderDocumentSource {

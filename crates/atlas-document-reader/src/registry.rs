@@ -1,6 +1,6 @@
 use std::{
-    collections::{HashMap, VecDeque},
-    path::PathBuf,
+    collections::{HashMap, HashSet, VecDeque},
+    path::{Path, PathBuf},
     sync::Mutex,
 };
 
@@ -21,7 +21,7 @@ pub struct AuthorizedPdfSource {
 #[derive(Debug, Default)]
 struct RegistryState {
     sources: HashMap<ReaderSourceToken, AuthorizedPdfSource>,
-    token_by_document: HashMap<DocumentId, ReaderSourceToken>,
+    tokens_by_document: HashMap<DocumentId, HashSet<ReaderSourceToken>>,
     issue_order: VecDeque<ReaderSourceToken>,
 }
 
@@ -33,15 +33,12 @@ pub struct ReaderSourceRegistry {
 impl ReaderSourceRegistry {
     pub fn issue(&self, source: AuthorizedPdfSource) -> Result<ReaderSourceToken, AtlasError> {
         let mut state = self.lock()?;
-        if let Some(previous) = state.token_by_document.remove(&source.document_id) {
-            state.sources.remove(&previous);
-            state.issue_order.retain(|token| token != &previous);
-        }
-
         let token = ReaderSourceToken::new(Uuid::new_v4().to_string());
         state
-            .token_by_document
-            .insert(source.document_id.clone(), token.clone());
+            .tokens_by_document
+            .entry(source.document_id.clone())
+            .or_default()
+            .insert(token.clone());
         state.sources.insert(token.clone(), source);
         state.issue_order.push_back(token.clone());
 
@@ -49,7 +46,7 @@ impl ReaderSourceRegistry {
             if let Some(expired) = state.issue_order.pop_front()
                 && let Some(expired_source) = state.sources.remove(&expired)
             {
-                state.token_by_document.remove(&expired_source.document_id);
+                Self::remove_document_token(&mut state, &expired_source.document_id, &expired);
             }
         }
         Ok(token)
@@ -67,9 +64,30 @@ impl ReaderSourceRegistry {
         let Some(source) = state.sources.remove(token) else {
             return Ok(false);
         };
-        state.token_by_document.remove(&source.document_id);
+        Self::remove_document_token(&mut state, &source.document_id, token);
         state.issue_order.retain(|issued| issued != token);
         Ok(true)
+    }
+
+    pub fn path_is_active(&self, path: &Path) -> Result<bool, AtlasError> {
+        Ok(self
+            .lock()?
+            .sources
+            .values()
+            .any(|source| source.path == path))
+    }
+
+    fn remove_document_token(
+        state: &mut RegistryState,
+        document_id: &DocumentId,
+        token: &ReaderSourceToken,
+    ) {
+        if let Some(tokens) = state.tokens_by_document.get_mut(document_id) {
+            tokens.remove(token);
+            if tokens.is_empty() {
+                state.tokens_by_document.remove(document_id);
+            }
+        }
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, RegistryState>, AtlasError> {

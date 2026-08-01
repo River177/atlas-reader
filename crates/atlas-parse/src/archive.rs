@@ -128,12 +128,7 @@ impl MineruArchiveUnpacker {
                     layout_path = Some(target.clone());
                     None
                 }
-                EntryKind::Asset { expected_sha256 } => Some(verify_asset(
-                    &temporary,
-                    &plan.relative_path,
-                    expected_sha256,
-                    copied,
-                )?),
+                EntryKind::Asset => Some(verify_asset(&temporary, &plan.relative_path, copied)?),
             };
             fs::rename(&temporary, &target)
                 .map_err(|error| AtlasError::storage(error.to_string()))?;
@@ -196,13 +191,17 @@ impl MineruArchiveUnpacker {
             let Some(kind) = classify_entry(&relative_path)? else {
                 continue;
             };
-            if !paths.insert(relative_path.clone()) {
+            let collision_key = relative_path
+                .to_str()
+                .ok_or_else(|| invalid_archive("archive path is not valid UTF-8"))?
+                .to_ascii_lowercase();
+            if !paths.insert(collision_key) {
                 return Err(invalid_archive("archive contains a duplicate output path"));
             }
             match kind {
                 EntryKind::ContentList => content_lists += 1,
                 EntryKind::Layout => layouts += 1,
-                EntryKind::Asset { .. } => {}
+                EntryKind::Asset => {}
             }
             plans.push(EntryPlan {
                 index,
@@ -235,7 +234,7 @@ struct EntryPlan {
 enum EntryKind {
     ContentList,
     Layout,
-    Asset { expected_sha256: String },
+    Asset,
 }
 
 fn safe_entry_path(entry: &zip::read::ZipFile<'_, impl Read>) -> Result<PathBuf, AtlasError> {
@@ -281,15 +280,13 @@ fn classify_entry(path: &Path) -> Result<Option<EntryKind>, AtlasError> {
             .unwrap_or("");
         if stem.len() != 64 || !stem.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(invalid_archive(
-                "asset filename is not a SHA-256 content address",
+                "asset filename is not a valid Cloud MinerU resource id",
             ));
         }
         if AssetMimeType::from_extension(extension).is_none() {
             return Err(invalid_archive("asset has an unsupported image type"));
         }
-        return Ok(Some(EntryKind::Asset {
-            expected_sha256: stem.to_ascii_lowercase(),
-        }));
+        return Ok(Some(EntryKind::Asset));
     }
     Ok(None)
 }
@@ -297,17 +294,10 @@ fn classify_entry(path: &Path) -> Result<Option<EntryKind>, AtlasError> {
 fn verify_asset(
     path: &Path,
     relative_path: &Path,
-    expected_sha256: String,
     size_bytes: u64,
 ) -> Result<ExtractedMineruAsset, AtlasError> {
     let bytes = fs::read(path).map_err(|error| AtlasError::storage(error.to_string()))?;
     let actual = hex::encode(Sha256::digest(&bytes));
-    if actual != expected_sha256 {
-        let _ = fs::remove_file(path);
-        return Err(invalid_archive(
-            "asset content does not match its SHA-256 name",
-        ));
-    }
     let mime_type = sniff_image(&bytes)
         .ok_or_else(|| invalid_archive("asset bytes do not match a supported image MIME type"))?;
     let extension = relative_path
@@ -456,6 +446,30 @@ mod tests {
     }
 
     #[test]
+    fn rejects_case_folded_asset_path_collisions_before_writing() {
+        let lower = format!("images/{}.jpg", "a".repeat(64));
+        let upper = format!("images/{}.jpg", "A".repeat(64));
+        let mut owned = valid_entries()
+            .into_iter()
+            .map(|(name, bytes)| (name.to_owned(), bytes.to_vec()))
+            .collect::<Vec<_>>();
+        owned.push((lower, vec![0xff, 0xd8, 0xff, 0xe0]));
+        owned.push((upper, vec![0xff, 0xd8, 0xff, 0xdb]));
+        let borrowed = owned
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect::<Vec<_>>();
+        let destination = TempDir::new().expect("temporary directory");
+
+        let result = MineruArchiveUnpacker::new(ArchiveLimits::default())
+            .unpack(Cursor::new(zip(&borrowed)), destination.path());
+
+        assert!(result.is_err());
+        assert!(!destination.path().join("layout.json").exists());
+        assert!(!destination.path().join("images").exists());
+    }
+
+    #[test]
     fn verifies_asset_hash_and_magic_bytes() {
         let image: &[u8] = &[0xff, 0xd8, 0xff, 0xdb, 0x00, 0x01];
         let hash = hex::encode(Sha256::digest(image));
@@ -478,5 +492,34 @@ mod tests {
         assert_eq!(artifact.assets.len(), 1);
         assert_eq!(artifact.assets[0].sha256, hash);
         assert_eq!(artifact.assets[0].mime_type, AssetMimeType::ImageJpeg);
+    }
+
+    #[test]
+    fn provider_asset_id_does_not_need_to_equal_the_content_hash() {
+        let image: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
+        let actual_hash = hex::encode(Sha256::digest(image));
+        let provider_id = "a".repeat(64);
+        assert_ne!(provider_id, actual_hash);
+        let mut owned = valid_entries()
+            .into_iter()
+            .map(|(name, bytes)| (name.to_owned(), bytes.to_vec()))
+            .collect::<Vec<_>>();
+        owned.push((format!("images/{provider_id}.jpg"), image.to_vec()));
+        let borrowed = owned
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect::<Vec<_>>();
+        let destination = TempDir::new().expect("temporary directory");
+
+        let artifact = MineruArchiveUnpacker::new(ArchiveLimits::default())
+            .unpack(Cursor::new(zip(&borrowed)), destination.path())
+            .expect("provider resource ids should not be treated as content hashes");
+
+        assert_eq!(artifact.assets.len(), 1);
+        assert_eq!(artifact.assets[0].sha256, actual_hash);
+        assert_eq!(
+            artifact.assets[0].relative_path,
+            format!("images/{provider_id}.jpg")
+        );
     }
 }

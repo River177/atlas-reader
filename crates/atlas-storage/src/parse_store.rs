@@ -2,7 +2,10 @@ use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
 use atlas_domain::{AtlasError, CanonicalDocument, DocumentId};
-use atlas_parse::{ParseOperation, ParseOperationState, ParseStore, PublishArtifact};
+use atlas_parse::{
+    CLOUD_PARSER_VERSION, NORMALIZER_VERSION, ParseOperation, ParseOperationState, ParseStore,
+    PublishArtifact,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
@@ -113,6 +116,7 @@ impl SqliteParseStore {
                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
              )
              ON CONFLICT(id) DO UPDATE SET
+               normalizer_version = excluded.normalizer_version,
                state = excluded.state,
                progress = excluded.progress,
                batch_id = excluded.batch_id,
@@ -230,6 +234,12 @@ impl ParseStore for SqliteParseStore {
             return Err(AtlasError::storage(
                 "parse manifest belongs to a different document",
             ));
+        }
+        if document.parser.backend != "cloud_mineru"
+            || document.parser.version != CLOUD_PARSER_VERSION
+            || document.normalizer_version != NORMALIZER_VERSION
+        {
+            return Ok(None);
         }
         Ok(Some(document))
     }

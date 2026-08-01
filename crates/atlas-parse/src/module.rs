@@ -16,21 +16,20 @@ use sha2::{Digest, Sha256};
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::Mutex,
+    sync::{Mutex, Notify},
 };
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::identity::digest;
 use crate::{
     ArchiveLimits, CloudCredential, CloudParseErrorKind, CloudParseRequest, CloudParseStatus,
-    CloudParseSubmission, CloudParserPort, LocalExtractRequest, LocalTextExtractor,
-    MineruArchiveUnpacker, MineruAssetInput, MineruDocumentInput, MineruNormalizer,
-    NORMALIZER_VERSION, NewParseOperation, ParseOperation, ParseOperationState, ParseStore,
-    PublishArtifact,
-    local::{LOCAL_NORMALIZER_VERSION, LOCAL_PARSER_VERSION},
+    CloudParseSubmission, CloudParserPort, MineruArchiveUnpacker, MineruAssetInput,
+    MineruDocumentInput, MineruNormalizer, NORMALIZER_VERSION, NewParseOperation, ParseOperation,
+    ParseOperationState, ParseStore, PublishArtifact,
 };
 
-const CLOUD_PARSER_VERSION: &str = "mineru-v4-vlm";
+pub const CLOUD_PARSER_VERSION: &str = "mineru-v4-vlm";
 const MAX_DOWNLOAD_BYTES: u64 = 1_000_000_000;
 
 #[derive(Clone, Debug)]
@@ -100,6 +99,13 @@ pub trait ParseModule: Send + Sync {
         document_id: &DocumentId,
     ) -> Result<ParseSnapshot, AtlasError>;
 
+    /// Stops local work for a document and waits until its worker can no longer
+    /// publish files or database rows. Remote provider work may continue when
+    /// the provider does not support cancellation.
+    async fn cancel_document(&self, _document_id: &DocumentId) -> Result<(), AtlasError> {
+        Ok(())
+    }
+
     /// Explicit duplicate-cost protection gate. This is the only operation that
     /// abandons an unknown remote batch and requests a fresh upload.
     async fn reupload(
@@ -120,9 +126,10 @@ pub struct DefaultParseModule {
     documents: Arc<dyn DocumentStore>,
     configuration: Arc<dyn CloudParseConfigurationPort>,
     cloud: Arc<dyn CloudParserPort>,
-    local: Arc<dyn LocalTextExtractor>,
     artifact_root: PathBuf,
     in_flight: Arc<Mutex<HashSet<DocumentId>>>,
+    cancellations: Arc<Mutex<HashMap<DocumentId, CancellationToken>>>,
+    worker_completed: Arc<Notify>,
     poll_policy: ParsePollPolicy,
 }
 
@@ -142,7 +149,6 @@ impl DefaultParseModule {
         documents: Arc<dyn DocumentStore>,
         configuration: Arc<dyn CloudParseConfigurationPort>,
         cloud: Arc<dyn CloudParserPort>,
-        local: Arc<dyn LocalTextExtractor>,
         artifact_root: PathBuf,
     ) -> Self {
         Self {
@@ -150,9 +156,10 @@ impl DefaultParseModule {
             documents,
             configuration,
             cloud,
-            local,
             artifact_root,
             in_flight: Arc::new(Mutex::new(HashSet::new())),
+            cancellations: Arc::new(Mutex::new(HashMap::new())),
+            worker_completed: Arc::new(Notify::new()),
             poll_policy: ParsePollPolicy::default(),
         }
     }
@@ -176,45 +183,23 @@ impl DefaultParseModule {
         &self,
         document: &DocumentRecord,
         session_id: String,
-        configuration: Option<&CloudParseConfiguration>,
+        configuration: &CloudParseConfiguration,
     ) -> Result<ParseOperation, AtlasError> {
         let created_at = now_ms()?;
-        let backend = if configuration.is_some() {
-            ParseBackend::CloudMineru
-        } else {
-            ParseBackend::LocalText
-        };
         Ok(ParseOperation::new(NewParseOperation {
             id: Uuid::new_v4().to_string(),
             job_id: Uuid::new_v4().to_string(),
             session_id,
             document_id: document.id.clone(),
-            provider_profile_id: configuration.map(|value| value.profile_id.clone()),
-            backend: backend.as_str().to_owned(),
-            parser_version: match backend {
-                ParseBackend::CloudMineru => CLOUD_PARSER_VERSION.to_owned(),
-                ParseBackend::LocalText => LOCAL_PARSER_VERSION.to_owned(),
-            },
-            normalizer_version: match backend {
-                ParseBackend::CloudMineru => NORMALIZER_VERSION.to_owned(),
-                ParseBackend::LocalText => LOCAL_NORMALIZER_VERSION.to_owned(),
-            },
-            endpoint_origin: configuration.map(|value| value.endpoint_base_url.clone()),
-            endpoint_fingerprint: configuration.map(|value| value.endpoint_fingerprint.clone()),
+            provider_profile_id: Some(configuration.profile_id.clone()),
+            backend: ParseBackend::CloudMineru.as_str().to_owned(),
+            parser_version: CLOUD_PARSER_VERSION.to_owned(),
+            normalizer_version: NORMALIZER_VERSION.to_owned(),
+            endpoint_origin: Some(configuration.endpoint_base_url.clone()),
+            endpoint_fingerprint: Some(configuration.endpoint_fingerprint.clone()),
             data_id: document.sha256.clone(),
             created_at,
         }))
-    }
-
-    async fn make_operation(
-        &self,
-        document: &DocumentRecord,
-        session_id: String,
-        configuration: Option<&CloudParseConfiguration>,
-    ) -> Result<ParseOperation, AtlasError> {
-        let operation = self.build_operation(document, session_id, configuration)?;
-        self.store.save_operation(&operation).await?;
-        Ok(operation)
     }
 
     async fn start(
@@ -223,27 +208,42 @@ impl DefaultParseModule {
         configuration: Option<CloudParseConfiguration>,
     ) -> bool {
         let document_id = operation.document_id.clone();
-        if !self.reserve_document(&document_id).await {
+        let Some(cancellation) = self.reserve_document(&document_id).await else {
             return false;
-        }
-        self.spawn_reserved(operation, configuration);
+        };
+        self.spawn_reserved(operation, configuration, cancellation);
         true
     }
 
-    async fn reserve_document(&self, document_id: &DocumentId) -> bool {
-        self.in_flight.lock().await.insert(document_id.clone())
+    async fn reserve_document(&self, document_id: &DocumentId) -> Option<CancellationToken> {
+        if !self.in_flight.lock().await.insert(document_id.clone()) {
+            return None;
+        }
+        let cancellation = CancellationToken::new();
+        self.cancellations
+            .lock()
+            .await
+            .insert(document_id.clone(), cancellation.clone());
+        Some(cancellation)
+    }
+
+    async fn release_reservation(&self, document_id: &DocumentId) {
+        self.in_flight.lock().await.remove(document_id);
+        self.cancellations.lock().await.remove(document_id);
+        self.worker_completed.notify_waiters();
     }
 
     fn spawn_reserved(
         &self,
         operation: ParseOperation,
         configuration: Option<CloudParseConfiguration>,
+        cancellation: CancellationToken,
     ) {
         let document_id = operation.document_id.clone();
         let module = self.clone();
         tokio::spawn(async move {
-            module.execute(operation, configuration).await;
-            module.in_flight.lock().await.remove(&document_id);
+            module.execute(operation, configuration, cancellation).await;
+            module.release_reservation(&document_id).await;
         });
     }
 
@@ -251,7 +251,12 @@ impl DefaultParseModule {
         &self,
         mut operation: ParseOperation,
         configuration: Option<CloudParseConfiguration>,
+        cancellation: CancellationToken,
     ) {
+        if cancellation.is_cancelled() {
+            self.cancel_operation(&mut operation).await;
+            return;
+        }
         let document = match self.documents.get(&operation.document_id).await {
             Ok(Some(document)) => document,
             Ok(None) => {
@@ -274,7 +279,7 @@ impl DefaultParseModule {
             Ok(false) if operation.backend == ParseBackend::CloudMineru.as_str() => {
                 match configuration {
                     Some(configuration) => {
-                        self.execute_cloud(&mut operation, &document, &configuration)
+                        self.execute_cloud(&mut operation, &document, &configuration, &cancellation)
                             .await
                     }
                     None => Err(OperationFailure::failed(
@@ -283,7 +288,10 @@ impl DefaultParseModule {
                     )),
                 }
             }
-            Ok(false) => self.execute_local(&mut operation, &document).await,
+            Ok(false) => Err(OperationFailure::failed(
+                "unsupported_backend",
+                "Local text parsing is disabled",
+            )),
             Err(failure) => Err(failure),
         };
 
@@ -300,10 +308,9 @@ impl DefaultParseModule {
                 FailureDisposition::Failed => {
                     self.fail_operation(&mut operation, &failure.code, &failure.message)
                         .await;
-                    if operation.backend == ParseBackend::CloudMineru.as_str() {
-                        self.run_local_fallback(&document, operation.session_id.clone())
-                            .await;
-                    }
+                }
+                FailureDisposition::Cancelled => {
+                    self.cancel_operation(&mut operation).await;
                 }
             }
             self.cleanup_temporary_files(&operation).await;
@@ -315,7 +322,9 @@ impl DefaultParseModule {
         operation: &mut ParseOperation,
         document: &DocumentRecord,
         configuration: &CloudParseConfiguration,
+        cancellation: &CancellationToken,
     ) -> Result<(), OperationFailure> {
+        ensure_not_cancelled(cancellation)?;
         if !configuration_matches_operation(operation, configuration) {
             return Err(OperationFailure::failed(
                 "provider_settings_changed",
@@ -325,6 +334,7 @@ impl DefaultParseModule {
         validate_source(document)
             .await
             .map_err(OperationFailure::from_atlas)?;
+        ensure_not_cancelled(cancellation)?;
         let source_path = PathBuf::from(&document.file_path);
         let file_name = source_path
             .file_name()
@@ -356,6 +366,7 @@ impl DefaultParseModule {
                 .request_upload(&request)
                 .await
                 .map_err(OperationFailure::from_cloud)?;
+            ensure_not_cancelled(cancellation)?;
             if submission.data_id != operation.data_id {
                 return Err(OperationFailure::failed(
                     "protocol_incompatible",
@@ -377,6 +388,7 @@ impl DefaultParseModule {
                     .resolve_upload_error(operation, &request, error)
                     .await?;
             }
+            ensure_not_cancelled(cancellation)?;
             operation.state = ParseOperationState::Processing;
             operation.progress = Some(0.0);
             operation.updated_at = now_ms().map_err(OperationFailure::from_atlas)?;
@@ -388,12 +400,13 @@ impl DefaultParseModule {
             let batch_id = operation.batch_id.as_deref().ok_or_else(|| {
                 OperationFailure::failed("protocol_incompatible", "batch id is missing")
             })?;
-            match self
-                .cloud
-                .status(&request, batch_id)
-                .await
-                .map_err(OperationFailure::from_resume_status)?
-            {
+            let status = tokio::select! {
+                () = cancellation.cancelled() => return Err(OperationFailure::cancelled()),
+                status = self.cloud.status(&request, batch_id) => {
+                    status.map_err(OperationFailure::from_resume_status)?
+                }
+            };
+            match status {
                 CloudParseStatus::Missing => {
                     let submission = CloudParseSubmission {
                         batch_id: batch_id.to_owned(),
@@ -427,12 +440,13 @@ impl DefaultParseModule {
                 }
                 CloudParseStatus::Pending | CloudParseStatus::Running(_) => {}
             }
+            ensure_not_cancelled(cancellation)?;
         }
 
         let download_url = match completed_download_url {
             Some(download_url) => download_url,
             None => {
-                self.poll_until_complete(operation, &request, resumed_after_upload)
+                self.poll_until_complete(operation, &request, resumed_after_upload, cancellation)
                     .await?
             }
         };
@@ -458,6 +472,7 @@ impl DefaultParseModule {
             .download(&download_url, &archive_path, max_bytes)
             .await
             .map_err(OperationFailure::from_cloud)?;
+        ensure_not_cancelled(cancellation)?;
 
         operation.state = ParseOperationState::Normalizing;
         operation.updated_at = now_ms().map_err(OperationFailure::from_atlas)?;
@@ -486,6 +501,7 @@ impl DefaultParseModule {
         .await
         .map_err(|error| OperationFailure::failed("invalid_artifact", error.to_string()))?
         .map_err(OperationFailure::from_atlas)?;
+        ensure_not_cancelled(cancellation)?;
         let _ = fs::remove_file(&archive_path).await;
 
         let content_list = fs::read(&extracted.content_list_path)
@@ -515,6 +531,7 @@ impl DefaultParseModule {
                 assets: &assets,
             })
             .map_err(OperationFailure::from_atlas)?;
+        ensure_not_cancelled(cancellation)?;
         self.publish_document(operation, artifact_id, canonical, staging)
             .await
     }
@@ -554,6 +571,7 @@ impl DefaultParseModule {
         operation: &mut ParseOperation,
         request: &CloudParseRequest,
         resumed_after_upload: bool,
+        cancellation: &CancellationToken,
     ) -> Result<String, OperationFailure> {
         let batch_id = operation
             .batch_id
@@ -564,20 +582,22 @@ impl DefaultParseModule {
             .to_owned();
         let started = Instant::now();
         loop {
-            let status = self
-                .cloud
-                .status(request, &batch_id)
-                .await
-                .map_err(|error| {
-                    if error.kind == CloudParseErrorKind::Unauthorized {
-                        OperationFailure::from_cloud(error)
-                    } else {
-                        OperationFailure::unknown(
-                            "remote_status_unavailable",
-                            "Cloud MinerU status is temporarily unavailable",
-                        )
-                    }
-                })?;
+            ensure_not_cancelled(cancellation)?;
+            let status = tokio::select! {
+                () = cancellation.cancelled() => return Err(OperationFailure::cancelled()),
+                status = self.cloud.status(request, &batch_id) => {
+                    status.map_err(|error| {
+                        if error.kind == CloudParseErrorKind::Unauthorized {
+                            OperationFailure::from_cloud(error)
+                        } else {
+                            OperationFailure::unknown(
+                                "remote_status_unavailable",
+                                "Cloud MinerU status is temporarily unavailable",
+                            )
+                        }
+                    })?
+                }
+            };
             match status {
                 CloudParseStatus::Done { download_url } => return Ok(download_url),
                 CloudParseStatus::Failed { safe_message } => {
@@ -620,44 +640,11 @@ impl DefaultParseModule {
                     "Cloud MinerU is still processing; Atlas will resume this job later",
                 ));
             }
-            tokio::time::sleep(self.poll_policy.interval(started.elapsed())).await;
+            tokio::select! {
+                () = cancellation.cancelled() => return Err(OperationFailure::cancelled()),
+                () = tokio::time::sleep(self.poll_policy.interval(started.elapsed())) => {}
+            }
         }
-    }
-
-    async fn execute_local(
-        &self,
-        operation: &mut ParseOperation,
-        document: &DocumentRecord,
-    ) -> Result<(), OperationFailure> {
-        validate_source(document)
-            .await
-            .map_err(OperationFailure::from_atlas)?;
-        operation.state = ParseOperationState::Normalizing;
-        operation.progress = Some(0.0);
-        operation.updated_at = now_ms().map_err(OperationFailure::from_atlas)?;
-        self.store
-            .save_operation(operation)
-            .await
-            .map_err(OperationFailure::from_atlas)?;
-
-        let artifact_id = format!("artifact-{}", operation.id);
-        let canonical = self
-            .local
-            .extract(LocalExtractRequest {
-                document_id: document.id.clone(),
-                artifact_id: artifact_id.clone(),
-                source_sha256: document.sha256.clone(),
-                source_path: PathBuf::from(&document.file_path),
-                document_title: document.title.clone(),
-            })
-            .await
-            .map_err(OperationFailure::from_atlas)?;
-        let staging = self.artifact_root.join(".staging").join(&artifact_id);
-        fs::create_dir_all(&staging)
-            .await
-            .map_err(|error| OperationFailure::storage(error.to_string()))?;
-        self.publish_document(operation, artifact_id, canonical, staging)
-            .await
     }
 
     async fn publish_document(
@@ -781,22 +768,6 @@ impl DefaultParseModule {
         Ok(())
     }
 
-    async fn run_local_fallback(&self, document: &DocumentRecord, session_id: String) {
-        let Ok(mut operation) = self.make_operation(document, session_id, None).await else {
-            return;
-        };
-        if let Err(failure) = self.execute_local(&mut operation, document).await {
-            if failure.disposition == FailureDisposition::RetryOnRestart {
-                self.defer_operation(&mut operation, &failure.code, &failure.message)
-                    .await;
-            } else {
-                self.fail_operation(&mut operation, &failure.code, &failure.message)
-                    .await;
-            }
-            self.cleanup_temporary_files(&operation).await;
-        }
-    }
-
     async fn fail_operation(&self, operation: &mut ParseOperation, code: &str, message: &str) {
         operation.state = ParseOperationState::Failed;
         operation.progress = None;
@@ -807,6 +778,20 @@ impl DefaultParseModule {
             operation.completed_at = Some(now);
         }
         let _ = self.store.save_operation(operation).await;
+    }
+
+    async fn cancel_operation(&self, operation: &mut ParseOperation) {
+        operation.state = ParseOperationState::Cancelled;
+        operation.progress = None;
+        operation.error_code = Some("cancelled".to_owned());
+        operation.error_safe_json =
+            Some(r#"{"message":"Parsing was cancelled before document removal"}"#.to_owned());
+        if let Ok(now) = now_ms() {
+            operation.updated_at = now;
+            operation.completed_at = Some(now);
+        }
+        let _ = self.store.save_operation(operation).await;
+        self.cleanup_temporary_files(operation).await;
     }
 
     async fn unknown_operation(&self, operation: &mut ParseOperation, code: &str, message: &str) {
@@ -847,25 +832,35 @@ impl DefaultParseModule {
         document_id: &DocumentId,
         automatic: bool,
     ) -> Result<ParsedDocumentView, AtlasError> {
-        let document = self.store.active_document(document_id).await?;
-        let operation = self.store.latest_operation(document_id, None).await?;
+        let document = self
+            .store
+            .active_document(document_id)
+            .await?
+            .filter(|document| {
+                document.parser.backend == ParseBackend::CloudMineru.as_str()
+                    && document.parser.version == CLOUD_PARSER_VERSION
+                    && document.normalizer_version == NORMALIZER_VERSION
+            });
+        let operation = self
+            .store
+            .latest_operation(document_id, Some(ParseBackend::CloudMineru.as_str()))
+            .await?
+            .filter(|operation| {
+                operation_uses_current_versions(operation)
+                    || (operation.state == ParseOperationState::StatusUnknown
+                        && operation.error_code.as_deref() == Some("parser_version_changed"))
+            });
         let parse = match (&document, operation.as_ref()) {
             (_, Some(operation)) if !operation.state.is_terminal() => {
                 operation_snapshot(operation, automatic)
             }
             (Some(document), _) => ParseSnapshot {
-                state: if document.parser.backend == ParseBackend::CloudMineru.as_str() {
-                    ParseState::Ready
-                } else {
-                    ParseState::Degraded
-                },
+                state: ParseState::Ready,
                 backend: ParseBackend::parse(&document.parser.backend),
                 progress: Some(1.0),
                 parse_operation_id: operation.map(|value| value.id),
                 automatic_cloud_parsing_enabled: automatic,
-                safe_message: (document.parser.backend == ParseBackend::LocalText.as_str()).then(
-                    || "Using the PDF text layer; tables and formulas may be incomplete".to_owned(),
-                ),
+                safe_message: None,
             },
             (None, Some(operation)) => operation_snapshot(operation, automatic),
             (None, None) => ParseSnapshot {
@@ -889,21 +884,56 @@ impl ParseModule for DefaultParseModule {
             .clone()
             .filter(|configuration| configuration.automatic);
         let automatic = automatic_configuration.is_some();
-        let mut in_flight = self.in_flight.lock().await;
-        if !in_flight.insert(document_id.clone()) {
-            drop(in_flight);
+        let Some(cancellation) = self.reserve_document(&document_id).await else {
             return self.snapshot_for(&document_id, automatic).await;
-        }
+        };
         let preparation: Result<Option<ParseOperation>, AtlasError> = async {
-            let active = self.store.active_document(&document_id).await?;
+            let active = self
+                .store
+                .active_document(&document_id)
+                .await?
+                .filter(|document| {
+                    document.parser.backend == ParseBackend::CloudMineru.as_str()
+                        && document.parser.version == CLOUD_PARSER_VERSION
+                        && document.normalizer_version == NORMALIZER_VERSION
+                });
             if active.as_ref().is_some_and(|document| {
                 document.parser.backend == ParseBackend::CloudMineru.as_str()
             }) {
                 return Ok(None);
             }
-            if let Some(latest) = self.store.latest_operation(&document_id, None).await?
+            if let Some(mut latest) = self
+                .store
+                .latest_operation(&document_id, Some(ParseBackend::CloudMineru.as_str()))
+                .await?
                 && !latest.state.is_terminal()
             {
+                if latest.parser_version == CLOUD_PARSER_VERSION
+                    && latest.normalizer_version != NORMALIZER_VERSION
+                {
+                    latest.normalizer_version = NORMALIZER_VERSION.to_owned();
+                    latest.updated_at = now_ms()?;
+                    self.store.save_operation(&latest).await?;
+                } else if !operation_uses_current_versions(&latest) {
+                    let remote_batch_allocated = latest.batch_id.is_some();
+                    mark_parser_version_changed(&mut latest)?;
+                    self.store.save_operation(&latest).await?;
+                    if remote_batch_allocated || !automatic {
+                        return Ok(None);
+                    }
+                    let document = self
+                        .documents
+                        .get(&document_id)
+                        .await?
+                        .ok_or_else(|| AtlasError::not_found("document was not found"))?;
+                    let configuration = automatic_configuration.as_ref().ok_or_else(|| {
+                        AtlasError::invalid_input("Cloud MinerU is not configured")
+                    })?;
+                    let replacement =
+                        self.build_operation(&document, session_id.clone(), configuration)?;
+                    self.store.save_operation(&replacement).await?;
+                    return Ok(Some(replacement));
+                }
                 if latest.backend == ParseBackend::CloudMineru.as_str()
                     && available_configuration
                         .as_ref()
@@ -917,13 +947,15 @@ impl ParseModule for DefaultParseModule {
                     return Ok(None);
                 }
                 let resumable = latest.state != ParseOperationState::StatusUnknown
-                    && (latest.backend == ParseBackend::LocalText.as_str()
-                        || automatic_configuration
-                            .as_ref()
-                            .is_some_and(|configuration| {
-                                configuration_matches_operation(&latest, configuration)
-                            }));
+                    && automatic_configuration
+                        .as_ref()
+                        .is_some_and(|configuration| {
+                            configuration_matches_operation(&latest, configuration)
+                        });
                 return Ok(resumable.then_some(latest));
+            }
+            if !automatic {
+                return Ok(None);
             }
             if automatic
                 && self
@@ -934,12 +966,10 @@ impl ParseModule for DefaultParseModule {
                         matches!(
                             cloud.state,
                             ParseOperationState::Failed | ParseOperationState::StatusUnknown
-                        )
+                        ) && cloud.parser_version == CLOUD_PARSER_VERSION
+                            && cloud.normalizer_version == NORMALIZER_VERSION
                     })
             {
-                return Ok(None);
-            }
-            if active.is_some() && !automatic {
                 return Ok(None);
             }
             let document = self
@@ -947,8 +977,10 @@ impl ParseModule for DefaultParseModule {
                 .get(&document_id)
                 .await?
                 .ok_or_else(|| AtlasError::not_found("document was not found"))?;
-            let operation =
-                self.build_operation(&document, session_id, automatic_configuration.as_ref())?;
+            let configuration = automatic_configuration
+                .as_ref()
+                .ok_or_else(|| AtlasError::invalid_input("Cloud MinerU is not configured"))?;
+            let operation = self.build_operation(&document, session_id, configuration)?;
             self.store.save_operation(&operation).await?;
             Ok(Some(operation))
         }
@@ -956,17 +988,15 @@ impl ParseModule for DefaultParseModule {
         let operation = match preparation {
             Ok(Some(operation)) => operation,
             Ok(None) => {
-                in_flight.remove(&document_id);
-                drop(in_flight);
+                self.release_reservation(&document_id).await;
                 return self.snapshot_for(&document_id, automatic).await;
             }
             Err(error) => {
-                in_flight.remove(&document_id);
+                self.release_reservation(&document_id).await;
                 return Err(error);
             }
         };
-        drop(in_flight);
-        self.spawn_reserved(operation, automatic_configuration);
+        self.spawn_reserved(operation, automatic_configuration, cancellation);
         self.snapshot_for(&document_id, automatic).await
     }
 
@@ -992,6 +1022,14 @@ impl ParseModule for DefaultParseModule {
                 "only an unknown remote operation with a batch id can be queried",
             ));
         }
+        if operation.parser_version != CLOUD_PARSER_VERSION {
+            return Err(AtlasError::invalid_input(
+                "Cloud MinerU parser changed; re-upload this paper instead",
+            ));
+        }
+        if operation.normalizer_version != NORMALIZER_VERSION {
+            operation.normalizer_version = NORMALIZER_VERSION.to_owned();
+        }
         let configuration = self
             .configuration
             .load()
@@ -1003,11 +1041,11 @@ impl ParseModule for DefaultParseModule {
             ));
         }
         let resumed_at = now_ms()?;
-        if !self.reserve_document(document_id).await {
+        let Some(cancellation) = self.reserve_document(document_id).await else {
             return Err(AtlasError::invalid_input(
                 "a parse recovery is already running for this paper",
             ));
-        }
+        };
         operation.state = ParseOperationState::Processing;
         operation.progress = Some(0.0);
         operation.error_code = None;
@@ -1015,10 +1053,10 @@ impl ParseModule for DefaultParseModule {
         operation.updated_at = resumed_at;
         operation.completed_at = None;
         if let Err(error) = self.store.save_operation(&operation).await {
-            self.in_flight.lock().await.remove(document_id);
+            self.release_reservation(document_id).await;
             return Err(error);
         }
-        self.spawn_reserved(operation, Some(configuration));
+        self.spawn_reserved(operation, Some(configuration), cancellation);
         Ok(self.view(document_id).await?.parse)
     }
 
@@ -1047,7 +1085,7 @@ impl ParseModule for DefaultParseModule {
             .get(&document_id)
             .await?
             .ok_or_else(|| AtlasError::not_found("document was not found"))?;
-        let operation = self.build_operation(&document, session_id, Some(&configuration))?;
+        let operation = self.build_operation(&document, session_id, &configuration)?;
         let superseded_at = now_ms()?;
         superseded.state = ParseOperationState::Cancelled;
         superseded.progress = None;
@@ -1056,26 +1094,66 @@ impl ParseModule for DefaultParseModule {
             Some(r#"{"message":"Replaced by a user-confirmed re-upload"}"#.to_owned());
         superseded.updated_at = superseded_at;
         superseded.completed_at = Some(superseded_at);
-        if !self.reserve_document(&document_id).await {
+        let Some(cancellation) = self.reserve_document(&document_id).await else {
             return Err(AtlasError::invalid_input(
                 "a parse recovery is already running for this paper",
             ));
-        }
+        };
         if let Err(error) = self
             .store
             .supersede_operation(&superseded, &operation)
             .await
         {
-            self.in_flight.lock().await.remove(&document_id);
+            self.release_reservation(&document_id).await;
             return Err(error);
         }
-        self.spawn_reserved(operation, Some(configuration));
+        self.spawn_reserved(operation, Some(configuration), cancellation);
         Ok(self.view(&document_id).await?.parse)
+    }
+
+    async fn cancel_document(&self, document_id: &DocumentId) -> Result<(), AtlasError> {
+        let operation = self
+            .store
+            .latest_operation(document_id, Some(ParseBackend::CloudMineru.as_str()))
+            .await?;
+        if let Some(cancellation) = self.cancellations.lock().await.get(document_id).cloned() {
+            cancellation.cancel();
+        }
+        loop {
+            let completed = self.worker_completed.notified();
+            if !self.in_flight.lock().await.contains(document_id) {
+                break;
+            }
+            completed.await;
+        }
+        if let Some(operation) = operation.filter(|operation| !operation.state.is_terminal()) {
+            self.cleanup_temporary_files(&operation).await;
+            let finalized = self
+                .artifact_root
+                .join(document_id.as_str())
+                .join(format!("artifact-{}", operation.id));
+            match fs::remove_dir_all(finalized).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(AtlasError::storage(error.to_string())),
+            }
+        }
+        Ok(())
     }
 
     async fn recover(&self) -> Result<usize, AtlasError> {
         let mut latest_by_document = HashMap::<DocumentId, ParseOperation>::new();
-        for operation in self.store.recoverable_operations().await? {
+        for mut operation in self.store.recoverable_operations().await? {
+            if operation.backend != ParseBackend::CloudMineru.as_str()
+                || operation.parser_version != CLOUD_PARSER_VERSION
+            {
+                continue;
+            }
+            if operation.normalizer_version != NORMALIZER_VERSION {
+                operation.normalizer_version = NORMALIZER_VERSION.to_owned();
+                operation.updated_at = now_ms()?;
+                self.store.save_operation(&operation).await?;
+            }
             let replace = latest_by_document
                 .get(&operation.document_id)
                 .is_none_or(|current| operation_is_newer(&operation, current));
@@ -1089,24 +1167,21 @@ impl ParseModule for DefaultParseModule {
                 .cmp(&right.created_at)
                 .then_with(|| left.id.cmp(&right.id))
         });
+        if operations.is_empty() {
+            return Ok(0);
+        }
         let configuration = self.configuration.load().await.unwrap_or(None);
         let mut started = 0;
         for mut operation in operations {
-            let operation_configuration = if operation.backend == ParseBackend::CloudMineru.as_str()
-            {
-                let Some(configuration) = configuration.clone() else {
-                    continue;
-                };
-                if !configuration_matches_operation(&operation, &configuration) {
-                    mark_provider_settings_changed(&mut operation)?;
-                    self.store.save_operation(&operation).await?;
-                    continue;
-                }
-                Some(configuration)
-            } else {
-                None
+            let Some(configuration) = configuration.clone() else {
+                continue;
             };
-            if self.start(operation, operation_configuration).await {
+            if !configuration_matches_operation(&operation, &configuration) {
+                mark_provider_settings_changed(&mut operation)?;
+                self.store.save_operation(&operation).await?;
+                continue;
+            }
+            if self.start(operation, Some(configuration)).await {
                 started += 1;
             }
         }
@@ -1208,6 +1283,38 @@ fn configuration_matches_operation(
     operation.endpoint_fingerprint.as_deref() == Some(configuration.endpoint_fingerprint.as_str())
 }
 
+fn operation_uses_current_versions(operation: &ParseOperation) -> bool {
+    operation.backend == ParseBackend::CloudMineru.as_str()
+        && operation.parser_version == CLOUD_PARSER_VERSION
+        && operation.normalizer_version == NORMALIZER_VERSION
+}
+
+fn ensure_not_cancelled(cancellation: &CancellationToken) -> Result<(), OperationFailure> {
+    if cancellation.is_cancelled() {
+        Err(OperationFailure::cancelled())
+    } else {
+        Ok(())
+    }
+}
+
+fn mark_parser_version_changed(operation: &mut ParseOperation) -> Result<(), AtlasError> {
+    let changed_at = now_ms()?;
+    operation.state = if operation.batch_id.is_some() {
+        ParseOperationState::StatusUnknown
+    } else {
+        ParseOperationState::Cancelled
+    };
+    operation.progress = None;
+    operation.error_code = Some("parser_version_changed".to_owned());
+    operation.error_safe_json = Some(
+        r#"{"message":"Cloud MinerU parser changed; confirm a new upload to continue"}"#.to_owned(),
+    );
+    operation.updated_at = changed_at;
+    operation.completed_at =
+        (operation.state == ParseOperationState::Cancelled).then_some(changed_at);
+    Ok(())
+}
+
 fn mark_provider_settings_changed(operation: &mut ParseOperation) -> Result<(), AtlasError> {
     let changed_at = now_ms()?;
     operation.state = ParseOperationState::StatusUnknown;
@@ -1237,6 +1344,7 @@ enum FailureDisposition {
     Failed,
     StatusUnknown,
     RetryOnRestart,
+    Cancelled,
 }
 
 impl OperationFailure {
@@ -1245,6 +1353,14 @@ impl OperationFailure {
             code: code.into(),
             message: message.into(),
             disposition: FailureDisposition::Failed,
+        }
+    }
+
+    fn cancelled() -> Self {
+        Self {
+            code: "cancelled".to_owned(),
+            message: "Parsing was cancelled".to_owned(),
+            disposition: FailureDisposition::Cancelled,
         }
     }
 

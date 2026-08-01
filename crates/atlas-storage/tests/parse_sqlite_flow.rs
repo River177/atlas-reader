@@ -5,7 +5,8 @@ use atlas_domain::{
     CanonicalDocument, ChapterId, ChapterRole, DocumentId, ParserIdentity, StructuredContent,
 };
 use atlas_parse::{
-    NewParseOperation, ParseOperation, ParseOperationState, ParseStore, PublishArtifact,
+    CLOUD_PARSER_VERSION, NORMALIZER_VERSION, NewParseOperation, ParseOperation,
+    ParseOperationState, ParseStore, PublishArtifact,
 };
 use atlas_storage::{AtlasDatabase, SqliteParseStore};
 use sha2::{Digest, Sha256};
@@ -107,6 +108,87 @@ async fn operation_checkpoint_and_publish_survive_sqlite_reload() {
             .expect("job should load"),
         "succeeded"
     );
+}
+
+#[tokio::test]
+async fn legacy_local_artifacts_are_not_exposed_to_runtime_consumers() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let database = AtlasDatabase::open_in_memory()
+        .await
+        .expect("database should open");
+    insert_document(&database).await;
+    let artifacts = temporary.path().join("artifacts");
+    let store = SqliteParseStore::new(&database, artifacts.clone());
+    let mut operation = operation("operation-local", "job-local");
+    operation.backend = "local_text".to_owned();
+    operation.parser_version = "pdf-extract-0.12".to_owned();
+    operation.normalizer_version = "local-text-v1".to_owned();
+    operation.provider_profile_id = None;
+    operation.endpoint_origin = None;
+    operation.endpoint_fingerprint = None;
+    store
+        .save_operation(&operation)
+        .await
+        .expect("legacy operation should persist");
+    operation.state = ParseOperationState::Succeeded;
+    operation.completed_at = Some(2);
+    operation.updated_at = 2;
+    let mut document = canonical("artifact-local", "Legacy local text");
+    document.parser.name = "PDF text layer".to_owned();
+    document.parser.version = "pdf-extract-0.12".to_owned();
+    document.parser.backend = "local_text".to_owned();
+    document.normalizer_version = "local-text-v1".to_owned();
+    let manifest = persist_manifest(&artifacts, &document, "artifact-local");
+
+    store
+        .publish(&PublishArtifact {
+            id: "artifact-local".to_owned(),
+            operation,
+            document,
+            manifest_relative_path: manifest.0,
+            content_digest: manifest.1,
+            created_at: 2,
+        })
+        .await
+        .expect("legacy artifact should remain storable for compatibility");
+
+    assert!(
+        store
+            .active_document(&DocumentId::from("document-1"))
+            .await
+            .expect("active document query should succeed")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn operation_checkpoint_persists_an_in_place_normalizer_upgrade() {
+    let database = AtlasDatabase::open_in_memory()
+        .await
+        .expect("database should open");
+    insert_document(&database).await;
+    let store = SqliteParseStore::new(&database, std::env::temp_dir().join("atlas-artifacts-test"));
+    let mut operation = operation("operation-upgrade", "job-upgrade");
+    operation.normalizer_version = "mineru-v1".to_owned();
+    operation.state = ParseOperationState::Processing;
+    store
+        .save_operation(&operation)
+        .await
+        .expect("old normalizer checkpoint should persist");
+
+    operation.normalizer_version = NORMALIZER_VERSION.to_owned();
+    operation.updated_at = 2;
+    store
+        .save_operation(&operation)
+        .await
+        .expect("normalizer upgrade should persist");
+
+    let reloaded = store
+        .latest_operation(&DocumentId::from("document-1"), Some("cloud_mineru"))
+        .await
+        .expect("operation should load")
+        .expect("operation should exist");
+    assert_eq!(reloaded.normalizer_version, NORMALIZER_VERSION);
 }
 
 #[tokio::test]
@@ -271,11 +353,11 @@ fn operation(id: &str, job_id: &str) -> ParseOperation {
         session_id: "session-1".to_owned(),
         document_id: DocumentId::from("document-1"),
         provider_profile_id: None,
-        backend: "local_text".to_owned(),
-        parser_version: "test-parser".to_owned(),
-        normalizer_version: "test-normalizer".to_owned(),
-        endpoint_origin: None,
-        endpoint_fingerprint: None,
+        backend: "cloud_mineru".to_owned(),
+        parser_version: CLOUD_PARSER_VERSION.to_owned(),
+        normalizer_version: NORMALIZER_VERSION.to_owned(),
+        endpoint_origin: Some("https://mineru.example/api/v4".to_owned()),
+        endpoint_fingerprint: Some("fingerprint".to_owned()),
         data_id: "a".repeat(64),
         created_at: 1,
     })
@@ -292,11 +374,11 @@ fn canonical(artifact_id: &str, text: &str) -> CanonicalDocument {
         document_id: DocumentId::from("document-1"),
         source_sha256: "a".repeat(64),
         parser: ParserIdentity {
-            name: "Synthetic".to_owned(),
-            version: "1".to_owned(),
-            backend: "local_text".to_owned(),
+            name: "Cloud MinerU".to_owned(),
+            version: CLOUD_PARSER_VERSION.to_owned(),
+            backend: "cloud_mineru".to_owned(),
         },
-        normalizer_version: "1".to_owned(),
+        normalizer_version: NORMALIZER_VERSION.to_owned(),
         page_count: 1,
         title: Some("Synthetic".to_owned()),
         chapters: vec![CanonicalChapter {

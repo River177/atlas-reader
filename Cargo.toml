@@ -1,6 +1,6 @@
 [workspace]
 members = [
-  "apps/desktop/src-tauri",
+  "apps/web-server",
   "crates/atlas-adapters",
   "crates/atlas-contracts",
   "crates/atlas-domain",
